@@ -91,7 +91,7 @@ export async function criarEscola(
   });
 }
 
-/** Cria uma classe de teste. Sigla sempre com 3 caracteres. */
+/** Cria uma classe de teste. Sigla de 2 a 4 caracteres (LB, TEC, MOBI). */
 export async function criarClasse(
   prisma: PrismaClient,
   sigla: string,

@@ -1,5 +1,9 @@
 import type { Classe, Escola, PrismaClient } from "@/generated/prisma/client";
-import { SIGLA_CLASSE_LENGTH, SIGLA_ESCOLA_LENGTH } from "./config";
+import {
+  SIGLA_CLASSE_MAX_LENGTH,
+  SIGLA_CLASSE_MIN_LENGTH,
+  SIGLA_ESCOLA_LENGTH,
+} from "./config";
 import { getPrisma } from "./prisma";
 
 export type CadastroErroCodigo =
@@ -18,12 +22,26 @@ export class CadastroError extends Error {
   }
 }
 
-function validarFormatoSigla(sigla: string, comprimento: number): void {
-  if (sigla.length !== comprimento || !/^[A-Z0-9]+$/.test(sigla)) {
+/**
+ * Sigla de escola: largura fixa, porque abre o codigo.
+ * Sigla de classe: 2 a 4, porque fecha o codigo depois de um separador proprio.
+ */
+function validarFormatoSigla(sigla: string, minimo: number, maximo: number): void {
+  if (sigla.length < minimo || sigla.length > maximo) {
+    const exigencia =
+      minimo === maximo
+        ? `exatamente ${minimo} caracteres`
+        : `de ${minimo} a ${maximo} caracteres`;
     throw new CadastroError(
       "SIGLA_INVALIDA",
-      `A sigla "${sigla}" precisa ter exatamente ${comprimento} caracteres ` +
-        "maiusculos, sem acento e sem separador.",
+      `A sigla "${sigla}" precisa ter ${exigencia}.`,
+    );
+  }
+  if (!/^[A-Z0-9]+$/.test(sigla)) {
+    throw new CadastroError(
+      "SIGLA_INVALIDA",
+      `A sigla "${sigla}" precisa ser maiuscula, sem acento e sem separador. ` +
+        'Minuscula quebraria a unicidade: no SQLite, "Tec" e "TEC" sao distintos.',
     );
   }
 }
@@ -60,7 +78,7 @@ export async function atualizarEscola(
     }
 
     if (input.sigla !== undefined && input.sigla !== escola.sigla) {
-      validarFormatoSigla(input.sigla, SIGLA_ESCOLA_LENGTH);
+      validarFormatoSigla(input.sigla, SIGLA_ESCOLA_LENGTH, SIGLA_ESCOLA_LENGTH);
 
       const emitidos = await tx.codigo.count({ where: { escolaId: input.id } });
       if (emitidos > 0) {
@@ -102,7 +120,7 @@ export async function atualizarClasse(
     }
 
     if (input.sigla !== undefined && input.sigla !== classe.sigla) {
-      validarFormatoSigla(input.sigla, SIGLA_CLASSE_LENGTH);
+      validarFormatoSigla(input.sigla, SIGLA_CLASSE_MIN_LENGTH, SIGLA_CLASSE_MAX_LENGTH);
 
       const emitidos = await tx.codigo.count({ where: { classeId: input.id } });
       if (emitidos > 0) {

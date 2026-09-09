@@ -5,22 +5,21 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 /**
  * Seed de desenvolvimento.
  *
- * As CLASSES abaixo sao a sugestao da especificacao e ainda precisam do aceite do
- * SEOM (pendencia 2). As ESCOLAS sao placeholders de desenvolvimento, marcadas como
- * EXEMPLO de proposito: a lista definitiva das 62 escolas com sigla e codigo CIE e a
- * pendencia 1 e precisa vir revisada pelo SEOM, com checagem de colisao de siglas.
+ * As tres CLASSES abaixo sao as definidas pelo SEOM e substituem a lista de sete que
+ * a especificacao original sugeria. Nao existe mais um balde "Outros": todo bem
+ * precisa caber em uma das tres.
+ *
+ * As ESCOLAS sao placeholders de desenvolvimento, marcadas como EXEMPLO de proposito:
+ * a lista definitiva das 62 escolas com sigla e codigo CIE e a pendencia 1 e precisa
+ * vir revisada pelo SEOM, com checagem de colisao de siglas.
  *
  * Nao rode este seed contra o banco de producao depois que a lista real entrar.
  */
 
 const CLASSES = [
-  { sigla: "TEC", nome: "Tecnologia e informatica" },
-  { sigla: "MOV", nome: "Moveis" },
-  { sigla: "ELE", nome: "Eletroeletronicos" },
-  { sigla: "COZ", nome: "Cozinha e refeitorio" },
-  { sigla: "LAB", nome: "Laboratorio e material didatico" },
-  { sigla: "ESP", nome: "Esportivo" },
-  { sigla: "OUT", nome: "Outros" },
+  { sigla: "LB", nome: "Linha branca (artigos de cozinha)" },
+  { sigla: "MOBI", nome: "Mobiliario" },
+  { sigla: "TEC", nome: "Tecnologia" },
 ];
 
 const ESCOLAS_EXEMPLO = [

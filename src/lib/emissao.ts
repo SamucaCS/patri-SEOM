@@ -1,9 +1,13 @@
 import { Prisma, type Lote, type PrismaClient } from "@/generated/prisma/client";
 import {
+  ANO_DIGITS,
   LOTE_MAX,
+  SEPARADOR_CLASSE,
+  SEPARADOR_ESCOLA,
   SEQUENCIAL_DIGITS,
   SEQUENCIAL_MAX,
-  SIGLA_CLASSE_LENGTH,
+  SIGLA_CLASSE_MAX_LENGTH,
+  SIGLA_CLASSE_MIN_LENGTH,
   SIGLA_ESCOLA_LENGTH,
 } from "./config";
 import { getPrisma } from "./prisma";
@@ -16,6 +20,15 @@ export type EmitirLoteInput = {
   emitidoPor: string;
 };
 
+export type EmitirLoteOpcoes = {
+  client?: PrismaClient;
+  /**
+   * Ano gravado no codigo. Default: ano corrente.
+   * Existe para os testes fixarem o ano; a aplicacao nunca passa isso.
+   */
+  ano?: number;
+};
+
 export type EmitirLoteResultado = {
   lote: Lote;
   codigos: string[];
@@ -25,6 +38,7 @@ export type EmissaoErroCodigo =
   | "QUANTIDADE_INVALIDA"
   | "DESCRICAO_INVALIDA"
   | "EMITIDO_POR_INVALIDO"
+  | "ANO_INVALIDO"
   | "ESCOLA_NAO_ENCONTRADA"
   | "CLASSE_NAO_ENCONTRADA"
   | "SIGLA_INVALIDA"
@@ -46,41 +60,46 @@ export class EmissaoError extends Error {
   }
 }
 
-/** Tentativas totais em cima de "database is locked". Nunca em cima de unicidade. */
+/** Tentativas totais em cima de contencao de escrita. Nunca em cima de unicidade. */
 const MAX_TENTATIVAS = 3;
 const BACKOFF_BASE_MS = 25;
 
 /**
- * Monta o codigo no formato [SIGLA_ESCOLA][SEQUENCIAL][SIGLA_CLASSE].
- * Sem separadores, string continua.
+ * Monta o codigo no formato [ESCOLA]-[ANO][SEQUENCIAL]/[CLASSE].
+ *
+ *   montarCodigo("BR", 2026, 1, "MOBI") -> "BR-202600001/MOBI"
  */
 export function montarCodigo(
   siglaEscola: string,
+  ano: number,
   sequencial: number,
   siglaClasse: string,
 ): string {
   const seq = String(sequencial).padStart(SEQUENCIAL_DIGITS, "0");
-  return `${siglaEscola}${seq}${siglaClasse}`;
+  return `${siglaEscola}${SEPARADOR_ESCOLA}${ano}${seq}${SEPARADOR_CLASSE}${siglaClasse}`;
 }
 
 /**
- * Emite um lote de codigos para um par (escola, classe).
+ * Emite um lote de codigos para um trio (escola, classe, ano).
  *
- * O `client` opcional existe para os testes apontarem para um arquivo SQLite proprio.
- * Em producao a chamada e `emitirLote(input)` e usa o singleton.
+ * O sequencial reinicia em 1 a cada ano. Isso nao reaproveita codigo: o ano faz parte
+ * do codigo, entao BR-202600001/TEC e BR-202700001/TEC sao codigos diferentes.
  */
 export async function emitirLote(
   input: EmitirLoteInput,
-  client?: PrismaClient,
+  opcoes: EmitirLoteOpcoes = {},
 ): Promise<EmitirLoteResultado> {
-  validarEntrada(input);
+  const ano = opcoes.ano ?? new Date().getFullYear();
 
-  const db = client ?? getPrisma();
+  validarEntrada(input);
+  validarAno(ano);
+
+  const db = opcoes.client ?? getPrisma();
   let ultimoErroDeLock: unknown;
 
   for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
     try {
-      return await emitirLoteUmaVez(input, db);
+      return await emitirLoteUmaVez(input, ano, db);
     } catch (erro) {
       // Violacao de unicidade e bug de logica, nao contencao. Mascarar com retry
       // esconderia o problema: erro explicito e log, sem nova tentativa.
@@ -88,7 +107,7 @@ export async function emitirLote(
         console.error(
           "[emissao] Constraint de unicidade violada ao emitir lote. Isso e bug de " +
             "logica no calculo do sequencial, nao contencao de escrita. " +
-            `escolaId=${input.escolaId} classeId=${input.classeId} ` +
+            `escolaId=${input.escolaId} classeId=${input.classeId} ano=${ano} ` +
             `quantidade=${input.quantidade}`,
           erro,
         );
@@ -100,7 +119,7 @@ export async function emitirLote(
         );
       }
 
-      // Qualquer outro erro que nao seja lock sobe direto.
+      // Qualquer outro erro que nao seja contencao sobe direto.
       if (!ehBancoOcupado(erro)) {
         throw erro;
       }
@@ -133,6 +152,7 @@ export async function emitirLote(
  */
 async function emitirLoteUmaVez(
   input: EmitirLoteInput,
+  ano: number,
   client: PrismaClient,
 ): Promise<EmitirLoteResultado> {
   return client.$transaction(
@@ -153,25 +173,26 @@ async function emitirLoteUmaVez(
         );
       }
 
-      validarSigla(escola.sigla, SIGLA_ESCOLA_LENGTH, `escola ${escola.nome}`);
-      validarSigla(classe.sigla, SIGLA_CLASSE_LENGTH, `classe ${classe.nome}`);
+      validarSiglaEscola(escola.sigla, `escola ${escola.nome}`);
+      validarSiglaClasse(classe.sigla, `classe ${classe.nome}`);
 
-      // 1. Ultimo sequencial do par. Sem filtro por `cancelado`: codigo cancelado
-      //    continua ocupando o numero para sempre, o contador nunca retrocede.
+      // 1. Ultimo sequencial do trio (escola, classe, ano). Sem filtro por
+      //    `cancelado`: codigo cancelado continua ocupando o numero para sempre,
+      //    o contador nunca retrocede dentro do ano.
       const agregado = await tx.codigo.aggregate({
-        where: { escolaId: input.escolaId, classeId: input.classeId },
+        where: { escolaId: input.escolaId, classeId: input.classeId, ano },
         _max: { sequencial: true },
       });
       const ultimo = agregado._max.sequencial ?? 0;
 
-      // 2. Teto de 99.999 por par.
+      // 2. Teto de 99.999 por trio.
       if (ultimo + input.quantidade > SEQUENCIAL_MAX) {
         const restante = Math.max(0, SEQUENCIAL_MAX - ultimo);
         throw new EmissaoError(
           "TETO_EXCEDIDO",
-          `${escola.sigla}/${classe.sigla} chegou ao sequencial ${ultimo}. Emitir ` +
-            `${input.quantidade} passaria do teto de ${SEQUENCIAL_MAX}. ` +
-            `Restam ${restante} codigos para esse par.`,
+          `${escola.sigla}/${classe.sigla} chegou ao sequencial ${ultimo} em ${ano}. ` +
+            `Emitir ${input.quantidade} passaria do teto de ${SEQUENCIAL_MAX}. ` +
+            `Restam ${restante} codigos para esse par em ${ano}.`,
         );
       }
 
@@ -180,6 +201,7 @@ async function emitirLoteUmaVez(
         data: {
           escolaId: input.escolaId,
           classeId: input.classeId,
+          ano,
           quantidade: input.quantidade,
           descricao: input.descricao.trim(),
           emitidoPor: input.emitidoPor.trim(),
@@ -191,18 +213,19 @@ async function emitirLoteUmaVez(
       const registros: Prisma.CodigoCreateManyInput[] = [];
       for (let i = 1; i <= input.quantidade; i++) {
         const sequencial = ultimo + i;
-        const codigo = montarCodigo(escola.sigla, sequencial, classe.sigla);
+        const codigo = montarCodigo(escola.sigla, ano, sequencial, classe.sigla);
         codigos.push(codigo);
         registros.push({
           codigo,
           escolaId: input.escolaId,
           classeId: input.classeId,
+          ano,
           sequencial,
           loteId: lote.id,
         });
       }
 
-      // 5. Gravacao. O @@unique([escolaId, classeId, sequencial]) e a rede de
+      // 5. Gravacao. O @@unique([escolaId, classeId, ano, sequencial]) e a rede de
       //    seguranca: se algo escapou, o banco recusa aqui e a transacao some.
       await tx.codigo.createMany({ data: registros });
 
@@ -239,22 +262,59 @@ function validarEntrada(input: EmitirLoteInput): void {
   }
 }
 
+/** O ano entra no codigo com largura fixa, entao precisa caber em ANO_DIGITS. */
+function validarAno(ano: number): void {
+  const minimo = 10 ** (ANO_DIGITS - 1);
+  const maximo = 10 ** ANO_DIGITS - 1;
+
+  if (!Number.isInteger(ano) || ano < minimo || ano > maximo) {
+    throw new EmissaoError(
+      "ANO_INVALIDO",
+      `O ano ${ano} nao cabe no formato de ${ANO_DIGITS} digitos.`,
+    );
+  }
+}
+
 /**
- * Comprimento misto de sigla quebra o parsing do codigo, entao e rejeitado antes de
- * qualquer gravacao - inclusive para escola ja cadastrada com sigla fora do padrao.
+ * A sigla de escola abre o codigo, entao comprimento misto quebraria o parsing.
+ * Largura fixa e obrigatoria, mesmo para escola ja cadastrada fora do padrao.
  */
-function validarSigla(sigla: string, comprimento: number, alvo: string): void {
-  if (sigla.length !== comprimento) {
+function validarSiglaEscola(sigla: string, alvo: string): void {
+  if (sigla.length !== SIGLA_ESCOLA_LENGTH) {
     throw new EmissaoError(
       "SIGLA_INVALIDA",
       `A sigla "${sigla}" da ${alvo} tem ${sigla.length} caracteres; o formato exige ` +
-        `exatamente ${comprimento}.`,
+        `exatamente ${SIGLA_ESCOLA_LENGTH}.`,
     );
   }
+  validarCaracteres(sigla, alvo);
+}
+
+/**
+ * A sigla de classe fecha o codigo e vem depois de um separador proprio, entao pode
+ * ter largura variavel (LB=2, TEC=3, MOBI=4) sem ambiguidade de parsing.
+ */
+function validarSiglaClasse(sigla: string, alvo: string): void {
+  if (
+    sigla.length < SIGLA_CLASSE_MIN_LENGTH ||
+    sigla.length > SIGLA_CLASSE_MAX_LENGTH
+  ) {
+    throw new EmissaoError(
+      "SIGLA_INVALIDA",
+      `A sigla "${sigla}" da ${alvo} tem ${sigla.length} caracteres; o formato aceita ` +
+        `de ${SIGLA_CLASSE_MIN_LENGTH} a ${SIGLA_CLASSE_MAX_LENGTH}.`,
+    );
+  }
+  validarCaracteres(sigla, alvo);
+}
+
+function validarCaracteres(sigla: string, alvo: string): void {
   if (!/^[A-Z0-9]+$/.test(sigla)) {
     throw new EmissaoError(
       "SIGLA_INVALIDA",
-      `A sigla "${sigla}" da ${alvo} precisa ser maiuscula, sem acento e sem separador.`,
+      `A sigla "${sigla}" da ${alvo} precisa ser maiuscula, sem acento e sem ` +
+        "separador. Minuscula quebraria a unicidade: no SQLite, \"Tec\" e \"TEC\" " +
+        "sao valores distintos.",
     );
   }
 }

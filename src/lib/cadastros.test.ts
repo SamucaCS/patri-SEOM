@@ -9,6 +9,8 @@ import {
 import { CadastroError, atualizarClasse, atualizarEscola } from "./cadastros";
 import { emitirLote } from "./emissao";
 
+const ANO = 2026;
+
 let banco: BancoDeTeste;
 let prisma: PrismaClient;
 let escolaId: string;
@@ -19,7 +21,7 @@ beforeEach(async () => {
   prisma = banco.prisma;
 
   const escola = await criarEscola(prisma, "BR", "Batista Renzi");
-  const classe = await criarClasse(prisma, "TEC", "Tecnologia e informatica");
+  const classe = await criarClasse(prisma, "TEC", "Tecnologia");
   escolaId = escola.id;
   classeId = classe.id;
 });
@@ -37,7 +39,7 @@ async function emitirUm() {
       descricao: "Primeiro lote",
       emitidoPor: "Operador SEOM",
     },
-    prisma,
+    { client: prisma, ano: ANO },
   );
 }
 
@@ -89,13 +91,39 @@ describe("6. imutabilidade da sigla", () => {
     await emitirUm();
 
     await expect(
-      atualizarClasse({ id: classeId, sigla: "TIC" }, prisma),
+      atualizarClasse({ id: classeId, sigla: "TECN" }, prisma),
     ).rejects.toMatchObject({ codigo: "SIGLA_IMUTAVEL" });
   });
+});
 
-  it("recusa sigla nova com comprimento errado mesmo sem codigo emitido", async () => {
+describe("formato da sigla no cadastro", () => {
+  it("escola exige largura fixa: 3 caracteres e recusado", async () => {
     await expect(
       atualizarEscola({ id: escolaId, sigla: "ABC" }, prisma),
+    ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
+  });
+
+  it("classe aceita de 2 a 4 caracteres", async () => {
+    const lb = await atualizarClasse({ id: classeId, sigla: "LB" }, prisma);
+    expect(lb.sigla).toBe("LB");
+
+    const mobi = await atualizarClasse({ id: classeId, sigla: "MOBI" }, prisma);
+    expect(mobi.sigla).toBe("MOBI");
+  });
+
+  it("classe recusa sigla de 1 e de 5 caracteres", async () => {
+    await expect(
+      atualizarClasse({ id: classeId, sigla: "M" }, prisma),
+    ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
+
+    await expect(
+      atualizarClasse({ id: classeId, sigla: "MOBIL" }, prisma),
+    ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
+  });
+
+  it("recusa sigla minuscula: no SQLite 'Tec' e 'TEC' seriam registros distintos", async () => {
+    await expect(
+      atualizarClasse({ id: classeId, sigla: "Tec" }, prisma),
     ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
   });
 });
