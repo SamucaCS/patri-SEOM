@@ -9,15 +9,10 @@ import { CLASSES, ESCOLAS } from "./escolas";
  * Idempotente: roda por upsert com a sigla como chave, entao rodar de novo nao
  * duplica nada e nao mexe em codigo ja emitido.
  *
- * O codigo CIE entra como placeholder "PENDENTE-<sigla>" porque o campo e
- * obrigatorio e unico no schema e a lista de origem nao trouxe os CIEs. O upsert NAO
- * sobrescreve o CIE de quem ja tem um: assim, depois que o SEOM preencher os CIEs
- * reais pela tela de Cadastros, rodar o seed de novo nao apaga o trabalho.
+ * prisma/escolas.ts e a fonte da verdade e esta versionada, entao o upsert sobrescreve
+ * nome e CIE. Correcao de cadastro se faz la, nao so pela tela - senao o proximo seed
+ * desfaz a edicao.
  */
-
-function cieProvisorio(sigla: string): string {
-  return `PENDENTE-${sigla}`;
-}
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -40,12 +35,11 @@ async function main() {
   for (const escola of ESCOLAS) {
     await prisma.escola.upsert({
       where: { sigla: escola.sigla },
-      // Só o nome é atualizado: o CIE preenchido a mão pelo SEOM fica preservado.
-      update: { nome: escola.nome },
+      update: { nome: escola.nome, codigoCie: escola.codigoCie },
       create: {
         sigla: escola.sigla,
         nome: escola.nome,
-        codigoCie: cieProvisorio(escola.sigla),
+        codigoCie: escola.codigoCie,
       },
     });
   }

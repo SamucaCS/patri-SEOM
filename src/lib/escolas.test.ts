@@ -41,6 +41,44 @@ describe("lista oficial de escolas", () => {
   it("cobre as 64 entradas da URE Suzano", () => {
     expect(ESCOLAS).toHaveLength(64);
   });
+
+  it("nao tem codigo CIE repetido", () => {
+    const cies = ESCOLAS.map((e) => e.codigoCie);
+    const repetidos = cies.filter((c, i) => cies.indexOf(c) !== i);
+
+    expect(repetidos).toEqual([]);
+  });
+
+  it("so a URE segue com CIE pendente", () => {
+    const pendentes = ESCOLAS.filter((e) => e.codigoCie.startsWith("PENDENTE"));
+    expect(pendentes.map((e) => e.sigla)).toEqual(["URE"]);
+  });
+
+  it("todo CIE de escola e alfanumerico", () => {
+    // Dois CIEs terminam em letra (007171A, 921518A): tratar como numero truncaria.
+    const escolas = ESCOLAS.filter((e) => e.sigla !== "URE");
+    const fora = escolas.filter((e) => !/^[0-9A-Z]+$/.test(e.codigoCie));
+
+    expect(fora).toEqual([]);
+  });
+
+  it("preserva os CIEs que terminam em letra", () => {
+    const comLetra = ESCOLAS.filter((e) => /[A-Z]$/.test(e.codigoCie))
+      .filter((e) => e.sigla !== "URE")
+      .map((e) => e.codigoCie);
+
+    expect(comLetra.sort()).toEqual(["007171A", "921518A"]);
+  });
+
+  it("distingue a escola Raul Brasil do CEL anexo", () => {
+    const rba = ESCOLAS.find((e) => e.sigla === "RBA");
+    const rbe = ESCOLAS.find((e) => e.sigla === "RBE");
+
+    // Nao sao a mesma unidade duplicada: cada uma tem CIE proprio.
+    expect(rba?.codigoCie).toBe("006981");
+    expect(rbe?.codigoCie).toBe("985181");
+    expect(rba?.codigoCie).not.toBe(rbe?.codigoCie);
+  });
 });
 
 describe("lista oficial de classes", () => {
