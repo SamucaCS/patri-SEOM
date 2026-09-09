@@ -6,15 +6,7 @@ import {
   criarEscola,
   type BancoDeTeste,
 } from "@/test/banco";
-import {
-  CadastroError,
-  atualizarClasse,
-  atualizarEscola,
-  criarClasse as cadastrarClasse,
-  criarEscola as cadastrarEscola,
-  removerClasse,
-  removerEscola,
-} from "./cadastros";
+import { CadastroError, atualizarClasse, atualizarEscola } from "./cadastros";
 import { emitirLote } from "./emissao";
 
 const ANO = 2026;
@@ -133,92 +125,5 @@ describe("formato da sigla no cadastro", () => {
     await expect(
       atualizarClasse({ id: classeId, sigla: "Tec" }, prisma),
     ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
-  });
-});
-
-describe("criacao de cadastro", () => {
-  it("cria escola normalizando a sigla para maiuscula", async () => {
-    const nova = await cadastrarEscola(
-      { sigla: "abc", codigoCie: "123456", nome: "Escola Nova" },
-      prisma,
-    );
-    expect(nova.sigla).toBe("ABC");
-  });
-
-  it("recusa sigla de escola ja usada", async () => {
-    await expect(
-      cadastrarEscola({ sigla: "BRA", codigoCie: "999999", nome: "Outra" }, prisma),
-    ).rejects.toMatchObject({ codigo: "SIGLA_EM_USO" });
-  });
-
-  it("recusa CIE ja usado", async () => {
-    const existente = await prisma.escola.findUniqueOrThrow({
-      where: { sigla: "BRA" },
-    });
-    await expect(
-      cadastrarEscola(
-        { sigla: "ZZZ", codigoCie: existente.codigoCie, nome: "Outra" },
-        prisma,
-      ),
-    ).rejects.toMatchObject({ codigo: "CIE_EM_USO" });
-  });
-
-  it("recusa escola sem nome", async () => {
-    await expect(
-      cadastrarEscola({ sigla: "ZZZ", codigoCie: "999999", nome: "   " }, prisma),
-    ).rejects.toMatchObject({ codigo: "CAMPO_OBRIGATORIO" });
-  });
-
-  it("cria classe com sigla de 2 a 4 caracteres", async () => {
-    const lb = await cadastrarClasse({ sigla: "lb", nome: "Linha branca" }, prisma);
-    expect(lb.sigla).toBe("LB");
-
-    await expect(
-      cadastrarClasse({ sigla: "MOBILI", nome: "Longa" }, prisma),
-    ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
-  });
-});
-
-describe("remocao guardada", () => {
-  it("remove escola que nunca emitiu nada", async () => {
-    const nova = await cadastrarEscola(
-      { sigla: "ZZZ", codigoCie: "999999", nome: "Nunca usada" },
-      prisma,
-    );
-
-    await removerEscola(nova.id, prisma);
-    expect(await prisma.escola.findUnique({ where: { id: nova.id } })).toBeNull();
-  });
-
-  it("NAO remove escola com codigo emitido", async () => {
-    await emitirUm();
-
-    await expect(removerEscola(escolaId, prisma)).rejects.toMatchObject({
-      codigo: "TEM_CODIGO_EMITIDO",
-    });
-
-    // O codigo ja pode estar impresso em campo: apagar a escola o deixaria orfao.
-    expect(await prisma.escola.findUnique({ where: { id: escolaId } })).not.toBeNull();
-    expect(await prisma.codigo.count()).toBe(1);
-  });
-
-  it("NAO remove classe com codigo emitido", async () => {
-    await emitirUm();
-
-    await expect(removerClasse(classeId, prisma)).rejects.toMatchObject({
-      codigo: "TEM_CODIGO_EMITIDO",
-    });
-  });
-
-  it("desativar e o caminho para tirar de circulacao sem perder historico", async () => {
-    await emitirUm();
-
-    const desativada = await atualizarEscola(
-      { id: escolaId, ativa: false },
-      prisma,
-    );
-
-    expect(desativada.ativa).toBe(false);
-    expect(await prisma.codigo.count()).toBe(1);
   });
 });

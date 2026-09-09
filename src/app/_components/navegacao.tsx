@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 const ABAS = [
   { href: "/", rotulo: "Emissão" },
   { href: "/consulta", rotulo: "Consulta" },
-  { href: "/cadastros", rotulo: "Cadastros" },
 ];
 
 export function Navegacao() {

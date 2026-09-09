@@ -6,15 +6,25 @@ import {
 } from "./config";
 import { getPrisma } from "./prisma";
 
+/**
+ * Regras de cadastro de escola e classe.
+ *
+ * Nao existe tela de cadastro: o cadastro se faz editando prisma/escolas.ts e rodando
+ * `npm run db:seed`, que e idempotente e sobrescreve nome e CIE. Correcao pontual sai
+ * pelo `npm run db:studio`.
+ *
+ * Estas funcoes continuam aqui porque sao onde a imutabilidade da sigla e aplicada de
+ * fato. Elas seguem cobertas por teste e prontas caso um caminho de edicao volte.
+ *
+ * O Prisma Studio passa por cima delas - escreve direto no banco. A rede para esse
+ * caso e `verificarIntegridade()` em boot.ts, que compara cada codigo ja gravado com
+ * a sigla ATUAL da escola e da classe e acusa quando alguem mexeu por fora.
+ */
 export type CadastroErroCodigo =
   | "ESCOLA_NAO_ENCONTRADA"
   | "CLASSE_NAO_ENCONTRADA"
   | "SIGLA_IMUTAVEL"
-  | "SIGLA_INVALIDA"
-  | "SIGLA_EM_USO"
-  | "CIE_EM_USO"
-  | "CAMPO_OBRIGATORIO"
-  | "TEM_CODIGO_EMITIDO";
+  | "SIGLA_INVALIDA";
 
 export class CadastroError extends Error {
   readonly codigo: CadastroErroCodigo;
@@ -56,9 +66,6 @@ function validarFormatoSigla(sigla: string, minimo: number, maximo: number): voi
  * A sigla e imutavel a partir da primeira emissao, mesmo que a escola mude de nome -
  * o codigo ja impresso em campo carrega aquela sigla para sempre. O nome e campo
  * separado e continua editavel.
- *
- * A checagem vive aqui, no dominio, e nao na tela: a rota da API chama esta funcao,
- * entao bloquear na UI vira detalhe de conveniencia, nao a garantia.
  */
 export async function atualizarEscola(
   input: {
@@ -140,168 +147,5 @@ export async function atualizarClasse(
       where: { id: input.id },
       data: { sigla: input.sigla, nome: input.nome, ativa: input.ativa },
     });
-  });
-}
-
-/* ------------------------------------------------------------------ *
- * Listagem, criação e remoção
- * ------------------------------------------------------------------ */
-
-/**
- * Escolas com a contagem de códigos.
- *
- * `siglaTravada` é o que a tela usa para deixar o campo somente leitura. A UI é
- * conveniência: quem garante a regra é atualizarEscola(), que roda no servidor.
- */
-export async function listarEscolasParaCadastro(client?: PrismaClient) {
-  const db = client ?? getPrisma();
-  const escolas = await db.escola.findMany({
-    orderBy: { nome: "asc" },
-    include: { _count: { select: { codigos: true } } },
-  });
-
-  return escolas.map((e) => ({
-    id: e.id,
-    sigla: e.sigla,
-    codigoCie: e.codigoCie,
-    nome: e.nome,
-    ativa: e.ativa,
-    codigos: e._count.codigos,
-    siglaTravada: e._count.codigos > 0,
-  }));
-}
-
-export async function listarClassesParaCadastro(client?: PrismaClient) {
-  const db = client ?? getPrisma();
-  const classes = await db.classe.findMany({
-    orderBy: { sigla: "asc" },
-    include: { _count: { select: { codigos: true } } },
-  });
-
-  return classes.map((c) => ({
-    id: c.id,
-    sigla: c.sigla,
-    nome: c.nome,
-    ativa: c.ativa,
-    codigos: c._count.codigos,
-    siglaTravada: c._count.codigos > 0,
-  }));
-}
-
-function exigirTexto(valor: string, campo: string): string {
-  const limpo = valor.trim();
-  if (limpo.length === 0) {
-    throw new CadastroError("CAMPO_OBRIGATORIO", `${campo} é obrigatório.`);
-  }
-  return limpo;
-}
-
-export async function criarEscola(
-  input: { sigla: string; codigoCie: string; nome: string },
-  client?: PrismaClient,
-): Promise<Escola> {
-  const db = client ?? getPrisma();
-
-  const sigla = input.sigla.trim().toUpperCase();
-  validarFormatoSigla(sigla, SIGLA_ESCOLA_LENGTH, SIGLA_ESCOLA_LENGTH);
-  const codigoCie = exigirTexto(input.codigoCie, "O código CIE");
-  const nome = exigirTexto(input.nome, "O nome");
-
-  const [porSigla, porCie] = await Promise.all([
-    db.escola.findUnique({ where: { sigla } }),
-    db.escola.findUnique({ where: { codigoCie } }),
-  ]);
-  if (porSigla) {
-    throw new CadastroError(
-      "SIGLA_EM_USO",
-      `A sigla ${sigla} já pertence a ${porSigla.nome}.`,
-    );
-  }
-  if (porCie) {
-    throw new CadastroError(
-      "CIE_EM_USO",
-      `O CIE ${codigoCie} já pertence a ${porCie.nome}.`,
-    );
-  }
-
-  return db.escola.create({ data: { sigla, codigoCie, nome } });
-}
-
-export async function criarClasse(
-  input: { sigla: string; nome: string },
-  client?: PrismaClient,
-): Promise<Classe> {
-  const db = client ?? getPrisma();
-
-  const sigla = input.sigla.trim().toUpperCase();
-  validarFormatoSigla(sigla, SIGLA_CLASSE_MIN_LENGTH, SIGLA_CLASSE_MAX_LENGTH);
-  const nome = exigirTexto(input.nome, "O nome");
-
-  const existente = await db.classe.findUnique({ where: { sigla } });
-  if (existente) {
-    throw new CadastroError(
-      "SIGLA_EM_USO",
-      `A sigla ${sigla} já pertence a ${existente.nome}.`,
-    );
-  }
-
-  return db.classe.create({ data: { sigla, nome } });
-}
-
-/**
- * Remove uma escola que nunca emitiu nada.
- *
- * Serve para desfazer cadastro errado, não para dar baixa. Escola com código emitido
- * NUNCA é apagada: o código já pode estar impresso em campo, e apagar a escola dele
- * deixaria o número órfão. Para tirar de circulação, usa-se `ativa: false`.
- */
-export async function removerEscola(id: string, client?: PrismaClient): Promise<void> {
-  const db = client ?? getPrisma();
-
-  await db.$transaction(async (tx) => {
-    const escola = await tx.escola.findUnique({
-      where: { id },
-      include: { _count: { select: { codigos: true, lotes: true } } },
-    });
-    if (!escola) {
-      throw new CadastroError("ESCOLA_NAO_ENCONTRADA", `Escola ${id} não encontrada.`);
-    }
-
-    const usos = escola._count.codigos + escola._count.lotes;
-    if (usos > 0) {
-      throw new CadastroError(
-        "TEM_CODIGO_EMITIDO",
-        `${escola.nome} já tem ${escola._count.codigos} código(s) emitido(s) e não ` +
-          "pode ser excluída. Para tirá-la de circulação, desmarque “Ativa”.",
-      );
-    }
-
-    await tx.escola.delete({ where: { id } });
-  });
-}
-
-/** Mesma regra da escola. */
-export async function removerClasse(id: string, client?: PrismaClient): Promise<void> {
-  const db = client ?? getPrisma();
-
-  await db.$transaction(async (tx) => {
-    const classe = await tx.classe.findUnique({
-      where: { id },
-      include: { _count: { select: { codigos: true, lotes: true } } },
-    });
-    if (!classe) {
-      throw new CadastroError("CLASSE_NAO_ENCONTRADA", `Classe ${id} não encontrada.`);
-    }
-
-    const usos = classe._count.codigos + classe._count.lotes;
-    if (usos > 0) {
-      throw new CadastroError(
-        "TEM_CODIGO_EMITIDO",
-        `${classe.nome} já tem ${classe._count.codigos} código(s) emitido(s) e não ` +
-          "pode ser excluída. Para tirá-la de circulação, desmarque “Ativa”.",
-      );
-    }
-
-    await tx.classe.delete({ where: { id } });
   });
 }
