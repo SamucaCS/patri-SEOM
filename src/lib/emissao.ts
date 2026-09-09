@@ -65,9 +65,9 @@ const MAX_TENTATIVAS = 3;
 const BACKOFF_BASE_MS = 25;
 
 /**
- * Monta o codigo no formato [ESCOLA]-[ANO][SEQUENCIAL]/[CLASSE].
+ * Monta o codigo no formato [ESCOLA]-[ANO][SEQUENCIAL]-[CLASSE].
  *
- *   montarCodigo("BR", 2026, 1, "MOBI") -> "BR-202600001/MOBI"
+ *   montarCodigo("BRA", 2026, 1, "MOBI") -> "BRA-202600001-MOBI"
  */
 export function montarCodigo(
   siglaEscola: string,
@@ -83,7 +83,7 @@ export function montarCodigo(
  * Emite um lote de codigos para um trio (escola, classe, ano).
  *
  * O sequencial reinicia em 1 a cada ano. Isso nao reaproveita codigo: o ano faz parte
- * do codigo, entao BR-202600001/TEC e BR-202700001/TEC sao codigos diferentes.
+ * do codigo, entao BRA-202600001-TEC e BRA-202700001-TEC sao codigos diferentes.
  */
 export async function emitirLote(
   input: EmitirLoteInput,
@@ -190,7 +190,7 @@ async function emitirLoteUmaVez(
         const restante = Math.max(0, SEQUENCIAL_MAX - ultimo);
         throw new EmissaoError(
           "TETO_EXCEDIDO",
-          `${escola.sigla}/${classe.sigla} chegou ao sequencial ${ultimo} em ${ano}. ` +
+          `${escola.sigla}-${classe.sigla} chegou ao sequencial ${ultimo} em ${ano}. ` +
             `Emitir ${input.quantidade} passaria do teto de ${SEQUENCIAL_MAX}. ` +
             `Restam ${restante} codigos para esse par em ${ano}.`,
         );

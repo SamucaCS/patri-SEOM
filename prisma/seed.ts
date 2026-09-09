@@ -1,32 +1,23 @@
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { CLASSES, ESCOLAS } from "./escolas";
 
 /**
- * Seed de desenvolvimento.
+ * Seed com a lista real da URE Suzano.
  *
- * As tres CLASSES abaixo sao as definidas pelo SEOM e substituem a lista de sete que
- * a especificacao original sugeria. Nao existe mais um balde "Outros": todo bem
- * precisa caber em uma das tres.
+ * Idempotente: roda por upsert com a sigla como chave, entao rodar de novo nao
+ * duplica nada e nao mexe em codigo ja emitido.
  *
- * As ESCOLAS sao placeholders de desenvolvimento, marcadas como EXEMPLO de proposito:
- * a lista definitiva das 62 escolas com sigla e codigo CIE e a pendencia 1 e precisa
- * vir revisada pelo SEOM, com checagem de colisao de siglas.
- *
- * Nao rode este seed contra o banco de producao depois que a lista real entrar.
+ * O codigo CIE entra como placeholder "PENDENTE-<sigla>" porque o campo e
+ * obrigatorio e unico no schema e a lista de origem nao trouxe os CIEs. O upsert NAO
+ * sobrescreve o CIE de quem ja tem um: assim, depois que o SEOM preencher os CIEs
+ * reais pela tela de Cadastros, rodar o seed de novo nao apaga o trabalho.
  */
 
-const CLASSES = [
-  { sigla: "LB", nome: "Linha branca (artigos de cozinha)" },
-  { sigla: "MOBI", nome: "Mobiliario" },
-  { sigla: "TEC", nome: "Tecnologia" },
-];
-
-const ESCOLAS_EXEMPLO = [
-  { sigla: "AA", codigoCie: "000001", nome: "EXEMPLO - Escola A" },
-  { sigla: "AB", codigoCie: "000002", nome: "EXEMPLO - Escola B" },
-  { sigla: "AC", codigoCie: "000003", nome: "EXEMPLO - Escola C" },
-];
+function cieProvisorio(sigla: string): string {
+  return `PENDENTE-${sigla}`;
+}
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -42,21 +33,36 @@ async function main() {
     await prisma.classe.upsert({
       where: { sigla: classe.sigla },
       update: { nome: classe.nome },
-      create: classe,
+      create: { sigla: classe.sigla, nome: classe.nome },
     });
   }
 
-  for (const escola of ESCOLAS_EXEMPLO) {
+  for (const escola of ESCOLAS) {
     await prisma.escola.upsert({
       where: { sigla: escola.sigla },
+      // Só o nome é atualizado: o CIE preenchido a mão pelo SEOM fica preservado.
       update: { nome: escola.nome },
-      create: escola,
+      create: {
+        sigla: escola.sigla,
+        nome: escola.nome,
+        codigoCie: cieProvisorio(escola.sigla),
+      },
     });
   }
 
-  const classes = await prisma.classe.count();
   const escolas = await prisma.escola.count();
-  console.log(`Seed concluido: ${classes} classes, ${escolas} escolas (exemplo).`);
+  const classes = await prisma.classe.count();
+  const semCie = await prisma.escola.count({
+    where: { codigoCie: { startsWith: "PENDENTE-" } },
+  });
+
+  console.log(`Seed concluido: ${escolas} escolas, ${classes} classes.`);
+  if (semCie > 0) {
+    console.log(
+      `ATENCAO: ${semCie} escola(s) ainda com codigo CIE provisorio. ` +
+        "Preencher antes da primeira emissao real.",
+    );
+  }
 
   await prisma.$disconnect();
 }
