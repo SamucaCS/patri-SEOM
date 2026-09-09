@@ -49,25 +49,33 @@ describe("lista oficial de escolas", () => {
     expect(repetidos).toEqual([]);
   });
 
-  it("so a URE segue com CIE pendente", () => {
-    const pendentes = ESCOLAS.filter((e) => e.codigoCie.startsWith("PENDENTE"));
-    expect(pendentes.map((e) => e.sigla)).toEqual(["URE"]);
+  it("nenhuma unidade fica sem codigo CIE", () => {
+    const pendentes = ESCOLAS.filter(
+      (e) => e.codigoCie.trim() === "" || e.codigoCie.startsWith("PENDENTE"),
+    );
+    expect(pendentes).toEqual([]);
   });
 
-  it("todo CIE de escola e alfanumerico", () => {
+  it("todo CIE e alfanumerico", () => {
     // Dois CIEs terminam em letra (007171A, 921518A): tratar como numero truncaria.
-    const escolas = ESCOLAS.filter((e) => e.sigla !== "URE");
-    const fora = escolas.filter((e) => !/^[0-9A-Z]+$/.test(e.codigoCie));
-
+    const fora = ESCOLAS.filter((e) => !/^[0-9A-Z]+$/.test(e.codigoCie));
     expect(fora).toEqual([]);
   });
 
   it("preserva os CIEs que terminam em letra", () => {
-    const comLetra = ESCOLAS.filter((e) => /[A-Z]$/.test(e.codigoCie))
-      .filter((e) => e.sigla !== "URE")
-      .map((e) => e.codigoCie);
+    const comLetra = ESCOLAS.filter((e) => /[A-Z]$/.test(e.codigoCie)).map(
+      (e) => e.codigoCie,
+    );
 
     expect(comLetra.sort()).toEqual(["007171A", "921518A"]);
+  });
+
+  it("so o CIE da URE foge do padrao de 6 caracteres das escolas", () => {
+    // Guarda a observacao, nao a impede: se o SEOM confirmar "010502", este teste
+    // avisa que a linha mudou de forma.
+    const foraDoPadrao = ESCOLAS.filter((e) => e.codigoCie.replace(/[A-Z]$/, "").length !== 6);
+
+    expect(foraDoPadrao.map((e) => e.sigla)).toEqual(["URE"]);
   });
 
   it("distingue a escola Raul Brasil do CEL anexo", () => {

@@ -28,11 +28,13 @@
  * Dois CIEs terminam em letra (007171A, 921518A). Por isso codigoCie e String e a
  * validacao aceita alfanumerico - tratar como numero truncaria esses dois.
  *
- * PENDENTE: a URE em si nao tem CIE na fonte, entao fica "PENDENTE-URE". Se a URE nao
- * precisar emitir codigo para bem proprio, a linha pode simplesmente sair.
+ * O CIE da URE (10502) veio do SEOM e nao da fonte acima, porque a URE nao e escola e
+ * nao aparece la. Ele esta gravado como foi informado. Observacao para conferencia:
+ * os 63 CIEs de escola tem todos 6 caracteres com zero a esquerda (007055, 041956),
+ * entao se o sistema do SEOM usar esse mesmo padrao, o valor seria "010502".
  */
 export const ESCOLAS = [
-  { sigla: "URE", codigoCie: "PENDENTE-URE", nome: "Unidade Regional De Ensino - Suzano" },
+  { sigla: "URE", codigoCie: "10502", nome: "Unidade Regional De Ensino - Suzano" },
   { sigla: "ARL", codigoCie: "908460", nome: "ALFREDO ROBERTO" },
   { sigla: "ARO", codigoCie: "902949", nome: "ALICE ROMANOS PROFª" },
   { sigla: "ASS", codigoCie: "902937", nome: "ANDERSON DA SILVA SOARES" },
