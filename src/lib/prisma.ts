@@ -52,3 +52,22 @@ export function getPrisma(): PrismaClient {
   }
   return globalForPrisma.prisma;
 }
+
+let walPendente: Promise<void> | null = null;
+
+/**
+ * Aplica o WAL uma vez por processo.
+ *
+ * Guarda a promessa, e nao um booleano: dois pedidos simultaneos na subida do
+ * servidor pegariam o booleano ainda falso e mandariam o PRAGMA duas vezes.
+ */
+export function garantirWal(client?: PrismaClient): Promise<void> {
+  if (!walPendente) {
+    walPendente = ativarWal(client ?? getPrisma()).catch((erro) => {
+      // Nao derruba a aplicacao: o banco funciona sem WAL, so com mais contencao.
+      console.error("[prisma] Nao foi possivel ativar o WAL.", erro);
+      walPendente = null;
+    });
+  }
+  return walPendente;
+}
