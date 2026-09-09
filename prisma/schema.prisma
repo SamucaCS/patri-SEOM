@@ -1,0 +1,74 @@
+// Emissor de Códigos de Patrimônio — SEOM / URE Suzano
+//
+// Regras estruturais que este schema precisa sustentar:
+//   - sequencial é por par (escola, classe), contador próprio a partir de 1
+//   - código nunca é reaproveitado: `cancelado` é só marcação, o número morre ocupado
+//   - não existe tabela de contadores: o próximo sequencial vem de MAX() na transação
+//   - não existe DELETE físico nem edição de código
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Escola {
+  id        String   @id @default(uuid())
+  sigla     String   @unique
+  codigoCie String   @unique
+  nome      String
+  ativa     Boolean  @default(true)
+  criadoEm  DateTime @default(now())
+
+  codigos   Codigo[]
+  lotes     Lote[]
+}
+
+model Classe {
+  id      String   @id @default(uuid())
+  sigla   String   @unique
+  nome    String
+  ativa   Boolean  @default(true)
+
+  codigos Codigo[]
+  lotes   Lote[]
+}
+
+model Lote {
+  id         String   @id @default(uuid())
+  escolaId   String
+  classeId   String
+  quantidade Int
+  descricao  String
+  emitidoPor String
+  criadoEm   DateTime @default(now())
+
+  escola     Escola   @relation(fields: [escolaId], references: [id])
+  classe     Classe   @relation(fields: [classeId], references: [id])
+  codigos    Codigo[]
+
+  @@index([escolaId, classeId])
+  @@index([criadoEm])
+}
+
+model Codigo {
+  id         String   @id @default(uuid())
+  codigo     String   @unique
+  escolaId   String
+  classeId   String
+  sequencial Int
+  loteId     String
+  cancelado  Boolean  @default(false)
+  criadoEm   DateTime @default(now())
+
+  escola     Escola   @relation(fields: [escolaId], references: [id])
+  classe     Classe   @relation(fields: [classeId], references: [id])
+  lote       Lote     @relation(fields: [loteId], references: [id])
+
+  // Rede de segurança: mesmo que a lógica falhe, o banco recusa sequencial repetido
+  // dentro do par (escola, classe).
+  @@unique([escolaId, classeId, sequencial])
+}
