@@ -183,3 +183,75 @@ describe("filtros da consulta", () => {
     expect(resultado.itens.some((c) => c.cancelado)).toBe(true);
   });
 });
+
+describe("QA: a exportacao nao pode quebrar por causa de uma linha", () => {
+  /** Grava um lote direto, sem passar pela emissao, simulando dado herdado. */
+  async function loteCru(descricao: string, emitidoPor = "QA") {
+    const lote = await prisma.lote.create({
+      data: {
+        escolaId,
+        classeId: classeTecId,
+        ano: ANO,
+        quantidade: 1,
+        descricao,
+        emitidoPor,
+      },
+    });
+    await prisma.codigo.create({
+      data: {
+        codigo: `SUZ-BR${ANO}9999-TEC`,
+        escolaId,
+        classeId: classeTecId,
+        ano: ANO,
+        sequencial: 9999,
+        loteId: lote.id,
+      },
+    });
+  }
+
+  it("texto acima do limite de uma celula nao derruba a planilha", async () => {
+    // A emissao barra isso na entrada, mas dado herdado ou editado a mao pelo
+    // Prisma Studio chegaria aqui. Antes da correcao, UMA linha assim fazia o
+    // SheetJS lancar e a exportacao INTEIRA falhava - levando junto o backup semanal.
+    await emitir(classeMobiId, 2, "Lote normal");
+    await loteCru("Z".repeat(40_000));
+
+    const codigos = await buscarCodigosParaExportar({}, prisma);
+    expect(codigos).toHaveLength(3);
+
+    const linhas = lerPlanilha(montarPlanilha(codigos));
+    expect(linhas).toHaveLength(4);
+  });
+
+  it("o valor cortado fica visivel, nao silencioso", async () => {
+    await loteCru("Z".repeat(40_000));
+
+    const linhas = lerPlanilha(montarPlanilha(await buscarCodigosParaExportar({}, prisma)));
+    const descricao = String(linhas[1][6]);
+
+    expect(descricao.length).toBeLessThanOrEqual(32_767);
+    expect(descricao).toContain("[CORTADO]");
+  });
+
+  it("emitidoPor gigante tambem nao derruba", async () => {
+    await loteCru("Descricao normal", "Y".repeat(50_000));
+
+    expect(() =>
+      montarPlanilha([] as never[]),
+    ).not.toThrow();
+
+    const linhas = lerPlanilha(montarPlanilha(await buscarCodigosParaExportar({}, prisma)));
+    expect(String(linhas[1][8])).toContain("[CORTADO]");
+  });
+
+  it("nome de escola gigante tambem e cortado", async () => {
+    await prisma.escola.update({
+      where: { id: escolaId },
+      data: { nome: "N".repeat(40_000) },
+    });
+    await emitir(classeTecId, 1, "Lote");
+
+    const linhas = lerPlanilha(montarPlanilha(await buscarCodigosParaExportar({}, prisma)));
+    expect(String(linhas[1][2])).toContain("[CORTADO]");
+  });
+});

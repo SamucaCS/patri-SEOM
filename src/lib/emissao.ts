@@ -1,6 +1,9 @@
 import { Prisma, type Lote, type PrismaClient } from "@/generated/prisma/client";
 import {
   ANO_DIGITS,
+  DESCRICAO_MAX_LENGTH,
+  DESCRICAO_MIN_LENGTH,
+  EMITIDO_POR_MAX_LENGTH,
   LOTE_MAX,
   SEQUENCIAL_MAX,
   SIGLA_CLASSE_MAX_LENGTH,
@@ -8,9 +11,9 @@ import {
   SIGLA_ESCOLA_LENGTH,
   montarCodigo,
 } from "./config";
+import { getPrisma } from "./prisma";
 
 export { montarCodigo };
-import { getPrisma } from "./prisma";
 
 export type EmitirLoteInput = {
   escolaId: string;
@@ -41,6 +44,8 @@ export type EmissaoErroCodigo =
   | "ANO_INVALIDO"
   | "ESCOLA_NAO_ENCONTRADA"
   | "CLASSE_NAO_ENCONTRADA"
+  | "ESCOLA_INATIVA"
+  | "CLASSE_INATIVA"
   | "SIGLA_INVALIDA"
   | "TETO_EXCEDIDO"
   | "SEQUENCIAL_DUPLICADO"
@@ -159,6 +164,22 @@ async function emitirLoteUmaVez(
         );
       }
 
+      // Unidade inativa nao emite. A tela ja filtra o seletor, mas a server action
+      // recebe escolaId do cliente: uma aba aberta antes da desativacao, ou um
+      // pedido forjado, passariam direto se a regra vivesse so na tela.
+      if (!escola.ativa) {
+        throw new EmissaoError(
+          "ESCOLA_INATIVA",
+          `${escola.nome} esta inativa e nao pode emitir codigos.`,
+        );
+      }
+      if (!classe.ativa) {
+        throw new EmissaoError(
+          "CLASSE_INATIVA",
+          `A classe ${classe.nome} esta inativa e nao pode emitir codigos.`,
+        );
+      }
+
       validarSiglaEscola(escola.sigla, `escola ${escola.nome}`);
       validarSiglaClasse(classe.sigla, `classe ${classe.nome}`);
 
@@ -189,8 +210,8 @@ async function emitirLoteUmaVez(
           classeId: input.classeId,
           ano,
           quantidade: input.quantidade,
-          descricao: input.descricao.trim(),
-          emitidoPor: input.emitidoPor.trim(),
+          descricao: limparTexto(input.descricao),
+          emitidoPor: limparTexto(input.emitidoPor),
         },
       });
 
@@ -221,6 +242,20 @@ async function emitirLoteUmaVez(
   );
 }
 
+/**
+ * Normaliza texto livre antes de gravar.
+ *
+ * Tira caractere de controle e colapsa espaco: descricao de lote e uma linha so, e um
+ * NUL ou um \r no meio ja apareceu vindo de copiar-e-colar. Alem de sujar a consulta,
+ * caractere de controle nao tem representacao valida em XML de planilha.
+ */
+export function limparTexto(valor: string): string {
+  return valor
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function validarEntrada(input: EmitirLoteInput): void {
   if (!Number.isInteger(input.quantidade)) {
     throw new EmissaoError(
@@ -234,16 +269,36 @@ function validarEntrada(input: EmitirLoteInput): void {
       `A quantidade precisa estar entre 1 e ${LOTE_MAX}. Recebido: ${input.quantidade}.`,
     );
   }
-  if (input.descricao.trim().length < 3) {
+
+  const descricao = limparTexto(input.descricao);
+  if (descricao.length < DESCRICAO_MIN_LENGTH) {
     throw new EmissaoError(
       "DESCRICAO_INVALIDA",
-      "A descricao do lote e obrigatoria e precisa ter ao menos 3 caracteres.",
+      `A descricao do lote e obrigatoria e precisa ter ao menos ` +
+        `${DESCRICAO_MIN_LENGTH} caracteres.`,
     );
   }
-  if (input.emitidoPor.trim().length === 0) {
+  // Teto de verdade, nao capricho: texto acima do limite de uma celula derruba a
+  // exportacao inteira do .xlsx, e com ela o backup semanal.
+  if (descricao.length > DESCRICAO_MAX_LENGTH) {
+    throw new EmissaoError(
+      "DESCRICAO_INVALIDA",
+      `A descricao do lote passa de ${DESCRICAO_MAX_LENGTH} caracteres ` +
+        `(tem ${descricao.length}). Resuma: ela aparece na consulta e na exportacao.`,
+    );
+  }
+
+  const emitidoPor = limparTexto(input.emitidoPor);
+  if (emitidoPor.length === 0) {
     throw new EmissaoError(
       "EMITIDO_POR_INVALIDO",
       "Informe quem esta emitindo o lote.",
+    );
+  }
+  if (emitidoPor.length > EMITIDO_POR_MAX_LENGTH) {
+    throw new EmissaoError(
+      "EMITIDO_POR_INVALIDO",
+      `O nome de quem emite passa de ${EMITIDO_POR_MAX_LENGTH} caracteres.`,
     );
   }
 }

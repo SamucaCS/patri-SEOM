@@ -34,6 +34,21 @@ export const SIGLA_CLASSE_MAX_LENGTH = 4;
 /** Separador do codigo. Um so, para todos os campos. */
 export const SEPARADOR = "-";
 
+/**
+ * Tetos de texto livre.
+ *
+ * Nao sao cosmeticos. Uma celula do .xlsx nao aceita mais de 32.767 caracteres, e o
+ * SheetJS lanca ao escrever - derrubando a exportacao INTEIRA, nao so aquela linha.
+ * Como o backup semanal depende do .xlsx, um unico lote com texto gigante deixaria a
+ * base sem backup e sem explicacao visivel. Cortar na entrada e a defesa barata.
+ */
+export const DESCRICAO_MIN_LENGTH = 3;
+export const DESCRICAO_MAX_LENGTH = 200;
+export const EMITIDO_POR_MAX_LENGTH = 100;
+
+/** Teto duro de uma celula de planilha, do proprio formato xlsx. */
+export const CELULA_MAX_LENGTH = 32_767;
+
 /** Teto por (escola, classe, ano). Com 4 digitos: 9.999 por ano. */
 export const SEQUENCIAL_MAX = 10 ** SEQUENCIAL_DIGITS - 1;
 

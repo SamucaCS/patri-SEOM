@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { CELULA_MAX_LENGTH } from "./config";
 import type { CodigoDetalhado } from "./consultas";
 
 /**
@@ -37,17 +38,32 @@ function formatarDataHora(data: Date): string {
   }).format(data);
 }
 
+/**
+ * Corta o que nao cabe numa celula de planilha.
+ *
+ * Rede de seguranca, nao regra de negocio: a emissao ja limita descricao e
+ * "emitido por" bem abaixo disso. Mas texto acima do limite faz o SheetJS lancar ao
+ * escrever, e isso derruba a exportacao INTEIRA - nao so a linha ruim. Como o backup
+ * semanal depende do .xlsx, uma linha herdada ou editada a mao deixaria a base sem
+ * backup. Melhor a planilha sair com um valor cortado e visivel do que nao sair.
+ */
+function caberNaCelula(valor: string): string {
+  if (valor.length <= CELULA_MAX_LENGTH) return valor;
+  const marca = "… [CORTADO]";
+  return valor.slice(0, CELULA_MAX_LENGTH - marca.length) + marca;
+}
+
 export function montarPlanilha(codigos: CodigoDetalhado[]): Buffer {
   const linhas = codigos.map((c) => [
     c.codigo,
     c.escola.sigla,
-    c.escola.nome,
+    caberNaCelula(c.escola.nome),
     c.escola.codigoCie,
     c.classe.sigla,
     c.sequencial,
-    c.lote.descricao,
+    caberNaCelula(c.lote.descricao),
     formatarDataHora(c.criadoEm),
-    c.lote.emitidoPor,
+    caberNaCelula(c.lote.emitidoPor),
   ]);
 
   const planilha = XLSX.utils.aoa_to_sheet([[...COLUNAS], ...linhas]);

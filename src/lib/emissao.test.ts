@@ -9,6 +9,8 @@ import {
 import {
   ANO_DIGITS,
   CODIGO_REGEX,
+  DESCRICAO_MAX_LENGTH,
+  EMITIDO_POR_MAX_LENGTH,
   LOTE_MAX,
   POSICAO_ANO,
   POSICAO_SEQUENCIAL,
@@ -20,6 +22,7 @@ import {
   ehBancoOcupado,
   ehViolacaoDeUnicidade,
   emitirLote,
+  limparTexto,
   montarCodigo,
 } from "./emissao";
 
@@ -675,5 +678,108 @@ describe("validacao de entrada", () => {
     ).rejects.toThrow();
     expect(await prisma.lote.count()).toBe(0);
     expect(await prisma.codigo.count()).toBe(0);
+  });
+});
+
+describe("QA: limites de texto livre", () => {
+  it("recusa descricao acima do teto", async () => {
+    await expect(
+      emitirLote(entrada({ descricao: "A".repeat(DESCRICAO_MAX_LENGTH + 1) }), {
+        client: prisma,
+        ano: ANO,
+      }),
+    ).rejects.toMatchObject({ codigo: "DESCRICAO_INVALIDA" });
+  });
+
+  it("aceita descricao exatamente no teto", async () => {
+    const { codigos } = await emitirLote(
+      entrada({ descricao: "A".repeat(DESCRICAO_MAX_LENGTH) }),
+      { client: prisma, ano: ANO },
+    );
+    expect(codigos).toHaveLength(1);
+  });
+
+  it("recusa emitidoPor acima do teto", async () => {
+    await expect(
+      emitirLote(entrada({ emitidoPor: "B".repeat(EMITIDO_POR_MAX_LENGTH + 1) }), {
+        client: prisma,
+        ano: ANO,
+      }),
+    ).rejects.toMatchObject({ codigo: "EMITIDO_POR_INVALIDO" });
+  });
+
+  it("texto gigante nao chega ao banco", async () => {
+    // O teto existe porque celula de planilha estoura em 32.767 caracteres e derruba
+    // a exportacao inteira - e com ela o backup semanal.
+    await expect(
+      emitirLote(entrada({ descricao: "X".repeat(40_000) }), {
+        client: prisma,
+        ano: ANO,
+      }),
+    ).rejects.toThrow();
+
+    expect(await prisma.lote.count()).toBe(0);
+    expect(await prisma.codigo.count()).toBe(0);
+  });
+
+  it("limpa caractere de controle e colapsa espaco", () => {
+    expect(limparTexto("linha1\nlinha2\ttab")).toBe("linha1 linha2 tab");
+    expect(limparTexto("nulo\u0000aqui")).toBe("nulo aqui");
+    expect(limparTexto("del\u007Fali")).toBe("del ali");
+    expect(limparTexto("  muitos    espacos  ")).toBe("muitos espacos");
+  });
+
+  it("grava a descricao ja normalizada", async () => {
+    const { codigos } = await emitirLote(
+      entrada({ descricao: "cadeiras\n\tda   sala" }),
+      { client: prisma, ano: ANO },
+    );
+    const lote = await prisma.lote.findFirstOrThrow({
+      where: { codigos: { some: { codigo: codigos[0] } } },
+    });
+
+    expect(lote.descricao).toBe("cadeiras da sala");
+  });
+});
+
+describe("QA: unidade inativa nao emite", () => {
+  it("recusa escola inativa", async () => {
+    await prisma.escola.update({ where: { id: escolaId }, data: { ativa: false } });
+
+    await expect(
+      emitirLote(entrada(), { client: prisma, ano: ANO }),
+    ).rejects.toMatchObject({ codigo: "ESCOLA_INATIVA" });
+
+    expect(await prisma.codigo.count()).toBe(0);
+  });
+
+  it("recusa classe inativa", async () => {
+    await prisma.classe.update({ where: { id: classeTecId }, data: { ativa: false } });
+
+    await expect(
+      emitirLote(entrada(), { client: prisma, ano: ANO }),
+    ).rejects.toMatchObject({ codigo: "CLASSE_INATIVA" });
+  });
+
+  it("a trava vive no servidor, nao no seletor da tela", async () => {
+    // Cenario real: aba aberta antes da desativacao ainda tem a escola na lista.
+    // O pedido chega com o escolaId antigo e precisa ser recusado aqui.
+    await prisma.escola.update({ where: { id: escolaId }, data: { ativa: false } });
+
+    await expect(
+      emitirLote(entrada({ quantidade: 50 }), { client: prisma, ano: ANO }),
+    ).rejects.toMatchObject({ codigo: "ESCOLA_INATIVA" });
+  });
+
+  it("reativar volta a permitir emissao", async () => {
+    await prisma.escola.update({ where: { id: escolaId }, data: { ativa: false } });
+    await expect(
+      emitirLote(entrada(), { client: prisma, ano: ANO }),
+    ).rejects.toThrow();
+
+    await prisma.escola.update({ where: { id: escolaId }, data: { ativa: true } });
+    const { codigos } = await emitirLote(entrada(), { client: prisma, ano: ANO });
+
+    expect(codigos).toEqual(["SUZ-BR20260001-TEC"]);
   });
 });

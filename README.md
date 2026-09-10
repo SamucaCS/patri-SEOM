@@ -37,9 +37,16 @@ SUZ-BR20260001-MOBI
    **não saem do nome** — estão listadas em `prisma/escolas.ts`. Sem esse desempate, a
    segunda escola de cada colisão nunca conseguiria emitir: o `codigo @unique`
    recusaria o registro para sempre.
-6. **Siglas são sempre maiúsculas.** No SQLite, `Tec` e `TEC` são valores distintos:
+6. **Texto livre tem teto: 200 caracteres na descrição, 100 em "Emitido por".**
+   Não é capricho. Uma célula de planilha estoura em 32.767 caracteres e o SheetJS
+   lança ao escrever — derrubando a exportação **inteira**, não só a linha ruim. Como
+   o backup semanal depende do `.xlsx`, um único lote com texto gigante deixaria a
+   base sem backup e sem explicação visível.
+7. **Unidade inativa não emite**, e a trava é do servidor. A tela filtra o seletor,
+   mas uma aba aberta antes da desativação ainda tem a escola na lista.
+8. **Siglas são sempre maiúsculas.** No SQLite, `Tec` e `TEC` são valores distintos:
    aceitar caixa mista seria uma fábrica de código duplicado.
-7. **Não há dígito verificador.** Decisão do cliente.
+9. **Não há dígito verificador.** Decisão do cliente.
 
 O teto é de 9.999 códigos por escola, por classe, por ano.
 
@@ -90,7 +97,7 @@ aquela checagem existe para pegar.
 
 ## Stack
 
-Next.js 15 · React 19 · TypeScript · Tailwind 4 · Prisma 7 + SQLite · Zod · SheetJS ·
+Next.js 15 · React 19 · TypeScript · Tailwind 4 · Prisma 7 + SQLite · SheetJS ·
 Vitest.
 
 O banco é um arquivo local (`prisma/emissor.db`). Não há serviço externo nem conta em
@@ -114,8 +121,8 @@ npm run verificar         # confere a integridade
 O `prisma generate` não é opcional em clone novo: `src/generated/prisma` não vai para
 o git, e sem ele o build e o typecheck falham por módulo inexistente.
 
-O seed é idempotente (upsert pela sigla), então rodar de novo não duplica nada e não
-toca em código já emitido.
+O seed é idempotente (upsert pelo código CIE), então rodar de novo não duplica nada e
+não toca em código já emitido.
 
 ## Uso
 
