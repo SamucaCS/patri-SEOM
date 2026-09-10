@@ -3,7 +3,7 @@
 // Regras estruturais que este schema precisa sustentar:
 //   - sequencial é por trio (escola, classe, ANO), contador próprio a partir de 1
 //   - o sequencial reinicia em 1 a cada ano; o ano faz parte do código, então
-//     BRA-202600001-TEC e BRA-202700001-TEC são códigos distintos e nada é reaproveitado
+//     SUZ-BR20260001-TEC e SUZ-BR20270001-TEC são códigos distintos e nada é reaproveitado
 //   - código nunca é reaproveitado: `cancelado` é só marcação, o número morre ocupado
 //   - não existe tabela de contadores: o próximo sequencial vem de MAX() na transação
 //   - não existe DELETE físico nem edição de código

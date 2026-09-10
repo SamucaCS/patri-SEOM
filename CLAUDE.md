@@ -57,13 +57,22 @@ de 2, 4 e 4. **Sigla de escola com comprimento diferente quebra o parsing.**
 2. **Sequencial é por trio (escola, classe, ano)** e reinicia em janeiro.
    Garantido por `@@unique([escolaId, classeId, ano, sequencial])`.
 3. **Teto de 9.999** por trio. Consequência dos 4 dígitos.
-4. **O ano vem do relógio do servidor**, resolvido em `America/Sao_Paulo` via `Intl`,
-   nunca de parâmetro de entrada e nunca de `getFullYear()` cru.
+4. **O ano vem do relógio do servidor**, resolvido em `America/Sao_Paulo` via `Intl`
+   (`anoCorrente()`), nunca de `getFullYear()` cru. A server action não aceita ano do
+   cliente. `emitirLote` tem um parâmetro `ano` opcional, usado **só pelos testes**
+   para fixar o ano — se algum dia ele for exposto numa rota, esta regra cai.
 5. **Código nunca é reaproveitado.** `MAX()` sem filtrar cancelados. Lote errado se
-   marca como cancelado; o número segue ocupado.
+   marca como cancelado por `npm run cancelar`; o número segue ocupado. Não há tela,
+   não há como cancelar código isolado, e o script não desfaz cancelamento.
 6. **Código é imutável.** Nenhuma rota edita ou apaga código.
 7. **Sigla é imutável após a primeira emissão** daquela escola ou classe. O nome
    continua editável.
+
+   Onde isso é de fato aplicado hoje: em `prisma/seed.ts`, que aborta com `exit 1`
+   nomeando a unidade e a contagem de códigos. `src/lib/cadastros.ts` também aplica a
+   regra, para escola e classe, e está sob teste — mas **nada na aplicação importa esse
+   módulo** desde que a tela de cadastros saiu. É rede pronta para uma tela futura, não
+   defesa em vigor. O Prisma Studio passa por cima de tudo isso.
 8. **Não há dígito verificador.** Ver "Decisões em aberto".
 
 ---
@@ -75,7 +84,7 @@ Três versões. Registrado para que ninguém reabra discussão já encerrada.
 | Versão | Formato | Por que mudou |
 |--------|---------|---------------|
 | 1 | `BR00001TEC` | Proposta inicial do cliente, 10 caracteres |
-| 2 | `BRA-2026-00001-MOBI` | Sigla de 2 letras deu 7 colisões atingindo 16 escolas; entrou o ano |
+| 2 | `BRA-202600001-MOBI` | Sigla de 2 letras deu 7 colisões atingindo 16 escolas; entrou o ano |
 | 3 | `SUZ-BR20260001-MOBI` | Decisão do cliente |
 
 **Antes de qualquer nova mudança de formato**, confirme o limite do campo no sistema do
@@ -107,9 +116,12 @@ não o código.
 **Tela de cadastros removida.** Escola e classe novas passam pelo Samuel. Ver
 "Dependências humanas".
 
-**Injeção de fórmula no `.xlsx` não é tratada.** As células saem como `t="s"` e o Excel
-não avalia string. Isso é problema de CSV. **Se um dia entrar exportação em CSV, essa
-decisão precisa ser revista.**
+**Injeção de fórmula no `.xlsx` não é tratada.** Verificado no XML gerado: as células
+de texto saem como `t="str"` e o arquivo **não tem nenhuma tag `<f>`** — não há fórmula
+para o Excel avaliar, `<v>` é valor em cache e nunca é interpretado. (Não é `t="s"`: o
+SheetJS não gera `sharedStrings.xml` aqui. Quem for auditar procurando `t="s"` acha
+zero e conclui errado.) Isso é problema de CSV. **Se um dia entrar exportação em CSV,
+essa decisão precisa ser revista.**
 
 **Retry casa com o `originalCode` do SQLite, nunca com `P1008`.** Contenção real chega
 como `SQLITE_BUSY_SNAPSHOT` — caso do modo WAL em que o snapshot de leitura ficou
@@ -153,11 +165,13 @@ Um teste congela os 4 pares conhecidos. Escola nova que crie um par quebra a su�
 força uma decisão consciente.
 
 **A mitigação em vigor é procedimental: nunca redigitar um código, sempre usar
-"Copiar lista" e colar.** Registrar isso no README é parte da entrega — é o que reduz o
-risco a praticamente zero, já que dentro do app ninguém digita sigla.
+"Copiar lista" e colar.** Está registrado no README, em "Nunca redigite um código" — é
+o que reduz o risco a praticamente zero, já que dentro do app ninguém digita sigla.
 
 `LB` escola × `LB` classe **não** é colisão: as posições são fixas e separadas por
-hífen.
+hífen, e `SUZ-LB20260001-LB` é um código perfeitamente válido. O teste
+`registra a colisão conhecida entre sigla de escola e sigla de classe` apenas congela
+o par — o nome dele exagera, não indica defeito.
 
 ---
 
