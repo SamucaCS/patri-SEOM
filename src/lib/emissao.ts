@@ -1,6 +1,7 @@
 import { Prisma, type Lote, type PrismaClient } from "@/generated/prisma/client";
 import {
   ANO_DIGITS,
+  anoCorrente,
   DESCRICAO_MAX_LENGTH,
   DESCRICAO_MIN_LENGTH,
   EMITIDO_POR_MAX_LENGTH,
@@ -26,8 +27,11 @@ export type EmitirLoteInput = {
 export type EmitirLoteOpcoes = {
   client?: PrismaClient;
   /**
-   * Ano gravado no codigo. Default: ano corrente.
-   * Existe para os testes fixarem o ano; a aplicacao nunca passa isso.
+   * Ano gravado no codigo. Default: ano corrente em Suzano (`anoCorrente()`).
+   *
+   * Existe SO para os testes fixarem o ano. A server action nunca passa isso, e nao
+   * deve passar a aceitar: ano vindo do cliente deixaria o operador escolher em que
+   * exercicio o codigo cai, e o sequencial de um ano fechado voltaria a andar.
    */
   ano?: number;
 };
@@ -80,7 +84,7 @@ export async function emitirLote(
   input: EmitirLoteInput,
   opcoes: EmitirLoteOpcoes = {},
 ): Promise<EmitirLoteResultado> {
-  const ano = opcoes.ano ?? new Date().getFullYear();
+  const ano = opcoes.ano ?? anoCorrente();
 
   validarEntrada(input);
   validarAno(ano);

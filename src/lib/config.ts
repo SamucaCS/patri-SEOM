@@ -69,6 +69,35 @@ export const POSICAO_ANO = PREFIXO_URE.length + SEPARADOR.length + SIGLA_ESCOLA_
 export const POSICAO_SEQUENCIAL = POSICAO_ANO + ANO_DIGITS;
 
 /**
+ * Fuso da URE. O ano do codigo e um fato administrativo de Suzano, nao do relogio da
+ * maquina: o mesmo instante precisa dar o mesmo ano rodando aqui, num container em UTC
+ * ou num servidor mal configurado.
+ */
+export const FUSO_URE = "America/Sao_Paulo";
+
+/**
+ * Ano corrente em Suzano.
+ *
+ * NAO usar `new Date().getFullYear()` nem `getUTCFullYear()`:
+ *
+ *   - `getUTCFullYear()` erra sempre entre 21h e 24h de 31/12: ja virou o ano em UTC,
+ *     mas ainda e o ano anterior aqui.
+ *   - `getFullYear()` depende do fuso do processo. Acerta nesta maquina e erra na
+ *     mesma janela se o servidor estiver em UTC - que e o padrao de container.
+ *
+ * A janela e de 3 horas por ano, mas cai no fechamento de exercicio, quando ha
+ * movimentacao de patrimonio. Um codigo com o ano errado nao tem conserto: quando o
+ * erro aparece, a etiqueta ja esta no bem e o numero ja foi digitado no SEOM.
+ */
+export function anoCorrente(agora: Date = new Date()): number {
+  return Number(
+    new Intl.DateTimeFormat("en-CA", { timeZone: FUSO_URE, year: "numeric" }).format(
+      agora,
+    ),
+  );
+}
+
+/**
  * Monta o codigo no formato SUZ-[ESCOLA][ANO][SEQUENCIAL]-[CLASSE].
  *
  *   montarCodigo("BR", 2026, 1, "MOBI") -> "SUZ-BR20260001-MOBI"

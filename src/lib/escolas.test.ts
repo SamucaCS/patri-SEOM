@@ -109,6 +109,43 @@ describe("lista oficial de escolas", () => {
       expect(ESCOLAS.find((e) => e.codigoCie === cie)?.sigla).toBe(sigla);
     }
   });
+
+  /**
+   * Duas siglas que sao anagrama uma da outra sao a troca de digitacao mais facil de
+   * cometer e mais dificil de perceber: o codigo continua valido, existe, e aponta para
+   * a escola errada. Nenhuma validacao pega isso - o bem fica lancado na outra unidade.
+   *
+   * Este teste NAO proibe anagrama. Ele congela os pares conhecidos: se a lista mudar,
+   * a suite quebra e alguem decide de novo, em vez de o par entrar sem ninguem ver.
+   */
+  it("nao ganha par de anagrama novo sem revisao", () => {
+    const conhecidos = new Set(["AP|PA", "AJ|JA", "BR|RB", "CM|MC"]);
+
+    const grupos = new Map<string, string[]>();
+    for (const escola of ESCOLAS) {
+      const chave = escola.sigla.split("").sort().join("");
+      grupos.set(chave, [...(grupos.get(chave) ?? []), escola.sigla]);
+    }
+
+    const encontrados = [...grupos.values()]
+      .filter((siglas) => siglas.length > 1)
+      .map((siglas) => [...siglas].sort().join("|"))
+      .sort();
+
+    expect(new Set(encontrados)).toEqual(conhecidos);
+  });
+
+  /**
+   * LB e a sigla da escola Luiz Bianconi e tambem a da classe Linha branca. Nao quebra
+   * nada - os campos tem posicao fixa e vivem em tabelas separadas - mas confunde quem
+   * le, e SUZ-LB20260001-LB existe de verdade. Fica registrado, nao corrigido.
+   */
+  it("registra a colisao conhecida entre sigla de escola e sigla de classe", () => {
+    const siglasDeClasse = new Set<string>(CLASSES.map((c) => c.sigla));
+    const colisoes = ESCOLAS.filter((e) => siglasDeClasse.has(e.sigla)).map((e) => e.sigla);
+
+    expect(colisoes).toEqual(["LB"]);
+  });
 });
 
 describe("lista oficial de classes", () => {

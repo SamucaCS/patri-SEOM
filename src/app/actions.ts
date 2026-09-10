@@ -1,5 +1,6 @@
 "use server";
 
+import { anoCorrente } from "@/lib/config";
 import { sequencialAtual } from "@/lib/consultas";
 import { EmissaoError, emitirLote } from "@/lib/emissao";
 
@@ -46,5 +47,5 @@ export async function sequencialAtualAction(
   classeId: string,
 ): Promise<number> {
   if (!escolaId || !classeId) return 0;
-  return sequencialAtual(escolaId, classeId, new Date().getFullYear());
+  return sequencialAtual(escolaId, classeId, anoCorrente());
 }

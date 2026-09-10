@@ -47,8 +47,20 @@ SUZ-BR20260001-MOBI
 8. **Siglas são sempre maiúsculas.** No SQLite, `Tec` e `TEC` são valores distintos:
    aceitar caixa mista seria uma fábrica de código duplicado.
 9. **Não há dígito verificador.** Decisão do cliente.
+10. **O ano do código vem do relógio do servidor, no fuso de Suzano** — nunca do
+    cliente e nunca de UTC. Está em `anoCorrente()` (`src/lib/config.ts`).
+    `getUTCFullYear()` erraria todo 31/12 entre 21h e 24h, e `getFullYear()` erraria
+    na mesma janela se o servidor rodasse em UTC, que é o padrão de container. São 3
+    horas por ano, mas caem no fechamento de exercício. Código com ano errado não tem
+    conserto: quando o erro aparece, a etiqueta já está no bem e o número já foi
+    digitado no SEOM.
 
-O teto é de 9.999 códigos por escola, por classe, por ano.
+O teto é de **9.999 códigos por escola, por classe, por ano** — 4 dígitos no
+sequencial. É consequência direta do formato escolhido (`SUZ-BR20260001-MOBI`); a
+especificação original previa 5 dígitos, ou seja 99.999. Como o sequencial é por trio
+e reinicia todo ano, 9.999 é uma escola recebendo 10 mil itens de uma só classe num
+único ano. Se isso for possível em alguma unidade, o formato precisa mudar **antes da
+primeira emissão** — depois é inviável.
 
 ## As duas telas
 
@@ -281,6 +293,14 @@ acesso para escolas · app mobile.
 - [ ] **Confirmar que o formato inteiro é aceito** no campo de patrimônio do sistema
       que o SEOM já usa: 19 caracteres e dois `-`. Depois da primeira emissão real,
       mudar o formato é inviável.
+- [ ] **Decidir sobre os 4 pares de siglas que são anagrama entre si.** São
+      `AP`/`PA`, `AJ`/`JA`, `BR`/`RB` e `CM`/`MC`. Uma troca de digitação entre
+      os dois gera um código **válido e existente**, apontando para a outra escola —
+      nenhuma validação pega, e o bem fica lançado na unidade errada. É inerente a
+      siglas de 2 caracteres, não é defeito de implementação. O teste
+      `não ganha par de anagrama novo sem revisão` congela a lista atual; se ela
+      mudar, a suíte quebra. Decidir antes da primeira emissão: conviver, desempatar
+      um lado de cada par, ou adotar dígito verificador (hoje regra 9 diz que não há).
 - [ ] **Revisar as 9 siglas desempatadas.** Nessas a sigla não sai do nome, então quem
       opera precisa consultar em vez de deduzir. Estão no topo de `prisma/escolas.ts`.
 - [ ] **Antes da primeira emissão real, começar de um banco limpo.** O banco de
