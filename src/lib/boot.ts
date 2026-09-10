@@ -5,7 +5,7 @@ import {
   SIGLA_ESCOLA_LENGTH,
 } from "./config";
 import { montarCodigo } from "./emissao";
-import { getPrisma } from "./prisma";
+import { getPrisma, getPrismaDireto } from "./prisma";
 
 export type Problema = {
   nivel: "erro" | "aviso";
@@ -22,26 +22,39 @@ export type Problema = {
  */
 export async function verificarIntegridade(
   client?: PrismaClient,
+  clientDireto?: PrismaClient,
 ): Promise<Problema[]> {
   const db = client ?? getPrisma();
   const problemas: Problema[] = [];
 
-  // 1. WAL. Sem ele, leitura e escrita concorrentes brigam bem mais.
+  // 1. A conexão da emissão sustenta transação interativa com advisory lock?
+  //
+  //    Substitui a antiga checagem de `journal_mode = WAL`, que era do SQLite. Esta
+  //    verifica a única coisa que, se estiver errada, quebra em silêncio: se a emissão
+  //    sair pelo pooler em transaction mode, o `BEGIN`, o lock e o `INSERT` podem cair
+  //    em backends diferentes, o lock deixa de valer para os statements seguintes, e
+  //    duas emissões simultâneas voltam a ler o mesmo `MAX()`. Não dá erro — dá código
+  //    de patrimônio duplicado.
+  //
+  //    A chave do teste é aleatória de propósito: com chave fixa, dois boots ao mesmo
+  //    tempo disputariam o mesmo lock e um acusaria falha que não existe.
+  const dbEmissao = clientDireto ?? client ?? getPrismaDireto();
   try {
-    const modo = await db.$queryRawUnsafe<Array<{ journal_mode: string }>>(
-      "PRAGMA journal_mode;",
-    );
-    const atual = modo[0]?.journal_mode?.toLowerCase();
-    if (atual && atual !== "wal") {
-      problemas.push({
-        nivel: "aviso",
-        mensagem: `O banco está em journal_mode "${atual}", não em WAL.`,
-      });
-    }
-  } catch {
+    const chave = `boot:${Math.random().toString(36).slice(2)}`;
+    await dbEmissao.$transaction(async (tx) => {
+      const r = await tx.$queryRaw<Array<{ ok: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(hashtext(${chave})::bigint) AS ok
+      `;
+      if (r[0]?.ok !== true) throw new Error("o lock de teste não foi concedido");
+    });
+  } catch (erro) {
     problemas.push({
-      nivel: "aviso",
-      mensagem: "Não foi possível confirmar o journal_mode do banco.",
+      nivel: "erro",
+      mensagem:
+        "A conexão de emissão não sustentou uma transação interativa com advisory " +
+        "lock. Emitir assim pode gerar código duplicado sem dar erro. Confira se " +
+        "DIRECT_URL aponta para a conexão direta (porta 5432), e não para o pooler " +
+        `(6543). Detalhe: ${erro instanceof Error ? erro.message : String(erro)}`,
     });
   }
 

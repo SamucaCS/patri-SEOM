@@ -20,7 +20,7 @@ let classeTecId: string;
 let classeMobiId: string;
 
 beforeEach(async () => {
-  banco = criarBancoDeTeste();
+  banco = await criarBancoDeTeste();
   prisma = banco.prisma;
 
   const escola = await criarEscola(prisma, "BR", "BATISTA RENZI");

@@ -7,14 +7,40 @@
 //   - código nunca é reaproveitado: `cancelado` é só marcação, o número morre ocupado
 //   - não existe tabela de contadores: o próximo sequencial vem de MAX() na transação
 //   - não existe DELETE físico nem edição de código
+//
+// Sobre o MAX() no Postgres: aqui ele NÃO basta sozinho. O SQLite serializava escrita
+// por natureza, então duas emissões simultâneas nunca liam o mesmo MAX(). O Postgres
+// não faz isso — no isolamento padrão (READ COMMITTED) duas transações leem o mesmo
+// MAX() e as duas seguem. Por isso a emissão pega um `pg_advisory_xact_lock` na chave
+// (escola, classe, ano) ANTES de ler. Ver src/lib/emissao.ts.
 
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
 }
 
+// ONDE ESTAO AS CONNECTION STRINGS
+//
+// No Prisma 7 `url` e `directUrl` NAO existem mais neste arquivo - o schema nao aceita
+// mais nenhuma das duas (P1012 se tentar). As URLs moram em dois lugares:
+//
+//   MIGRATIONS -> `prisma7.config.ts`, em `datasource.url`, que aponta para DIRECT_URL
+//                 (porta 5432). Este e o equivalente Prisma 7 do antigo `directUrl`.
+//
+//   RUNTIME    -> a connection string do ADAPTER passado ao PrismaClient, em
+//                 `src/lib/prisma.ts`. Sao dois clients:
+//                   - DATABASE_URL, pooler porta 6543 (?pgbouncer=true), para o uso
+//                     geral: na Vercel cada invocacao serverless abriria conexao nova
+//                     e o Postgres estouraria o limite;
+//                   - DIRECT_URL, porta 5432, EXCLUSIVO da transacao de emissao.
+//
+// A emissao precisa da conexao direta porque transacao interativa por pooler em
+// transaction mode nao se sustenta: o pooler devolve a conexao ao pool entre
+// statements, e o `pg_advisory_xact_lock` vive na transacao de UMA conexao. Se o
+// statement seguinte cair em outro backend, o lock nao vale para ele - e a serializacao
+// simplesmente nao acontece, sem erro nenhum. O sintoma seria codigo duplicado.
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 model Escola {

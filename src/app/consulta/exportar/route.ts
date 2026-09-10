@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { buscarCodigosParaExportar, type FiltrosCodigo } from "@/lib/consultas";
 import { montarPlanilha, nomeArquivoExportacao } from "@/lib/exportacao";
+import { operadorAtual } from "@/lib/sessao";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +10,20 @@ export const dynamic = "force-dynamic";
  *
  * Le os MESMOS parametros de busca da tela, entao o arquivo baixado corresponde
  * exatamente ao que estava filtrado - nunca a base inteira por engano.
+ *
+ * Route Handler e URL: da para chamar direto, sem passar pela tela. Por isso a sessao
+ * e verificada aqui tambem, e nao so no middleware. Sem filtro, esta rota devolve a
+ * base completa - nome, CIE e codigo das 64 unidades - num unico arquivo.
  */
 export async function GET(request: NextRequest) {
+  const operador = await operadorAtual();
+  if (!operador) {
+    return new Response("Faça login para exportar.", {
+      status: 401,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
   const p = request.nextUrl.searchParams;
 
   const filtros: FiltrosCodigo = {

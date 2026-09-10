@@ -3,7 +3,7 @@
 Documento de decisões. Registra **o que foi pedido e por quê** — o README cobre como o
 sistema se comporta.
 
-Última atualização: setembro de 2026, após as etapas 0 a 5 e a rodada de QA.
+Última atualização: setembro de 2026, após a migração para Postgres/Supabase e Vercel.
 
 > Este arquivo foi reconstruído a partir do histórico do projeto, não do código.
 > Ao retomar, confira cada regra contra a implementação e corrija divergências aqui.
@@ -103,11 +103,42 @@ auditoria: buraco na sequência é sinal de investigação.
 ordenação, mas fica legível da esquerda para a direita. Como a classe é o último bloco,
 ela pode ter largura variável sem quebrar o parsing.
 
-**SQLite, não Postgres.** Volume baixo, zero dependência de conta em serviço externo, e
-o SQLite serializa escritas por natureza. A aplicação roda na rede local do SEOM.
+**Postgres no Supabase, hospedado na Vercel.** Foi SQLite em máquina local até a
+decisão de publicar. A troca não foi preferência: na Vercel o sistema de arquivos é
+efêmero e as instâncias são separadas, então um arquivo SQLite lá produziria contadores
+independentes e **o mesmo código para bens diferentes**, em silêncio.
 
-**Sem autenticação.** `Emitido por` é rastro de auditoria, não segurança. Vale enquanto
-a aplicação só existir na rede local. Exposta para fora, isso deixa de bastar.
+O que se perdeu na troca precisa estar claro: **o SQLite serializava escrita por
+natureza**, e era isso — não o código da aplicação — que impedia duas emissões de lerem
+o mesmo `MAX(sequencial)`. O Postgres não faz isso. O substituto é um
+`pg_advisory_xact_lock` na chave `(escola, classe, ano)`, tomado antes da leitura, na
+mesma transação.
+
+**Duas connection strings, e trocá-las de lugar é a falha calada desta arquitetura.**
+`DATABASE_URL` é o pooler (6543), para runtime serverless. `DIRECT_URL` é a direta
+(5432), para migrations, scripts e **a transação de emissão** — pelo pooler em
+transaction mode, os statements da transação podem cair em conexões diferentes e o
+advisory lock deixa de valer, sem erro nenhum. Há três defesas contra isso:
+`npm run verificar`, a recusa do harness de teste, e o log de `SEQUENCIAL_DUPLICADO`.
+
+**Supabase Auth, e-mail e senha, usuário criado a mão no painel.** Sem cadastro aberto,
+sem recuperação por e-mail, sem convite por link. Enquanto o sistema vivia na rede
+local não havia login e `Emitido por` era só auditoria; publicado na internet, deixou
+de bastar — como este documento já previa.
+
+**`Emitido por` passou a vir da sessão.** Era texto livre lembrado no `localStorage`, e
+qualquer pessoa assinava um lote com o nome de outra. Agora o cliente nem envia o valor:
+a server action lê a sessão no servidor.
+
+**RLS ativo e forçado em todas as tabelas — e ele não protege o que parece.** Fecha a
+API REST que o Supabase publica sobre o schema `public`, acessível com a chave que está
+no navegador. **Não** restringe a aplicação: o Prisma conecta como dono das tabelas e
+bypassa RLS por definição do Postgres. A barreira do app é a sessão verificada em cada
+rota. Quem ler a migration de RLS esperando limite para o app vai se enganar.
+
+**Duas camadas de sessão, de propósito.** Middleware barra navegação; cada rota chama
+`exigirOperador()`. A segunda é a que vale — Server Action e Route Handler são
+endpoints HTTP e podem ser chamados direto.
 
 **Sem Zod.** Estava na especificação original, foi instalado e nunca usado. As
 validações à mão funcionam e estão sob teste. A linha da especificação estava errada,
@@ -123,11 +154,17 @@ SheetJS não gera `sharedStrings.xml` aqui. Quem for auditar procurando `t="s"` 
 zero e conclui errado.) Isso é problema de CSV. **Se um dia entrar exportação em CSV,
 essa decisão precisa ser revista.**
 
-**Retry casa com o `originalCode` do SQLite, nunca com `P1008`.** Contenção real chega
-como `SQLITE_BUSY_SNAPSHOT` — caso do modo WAL em que o snapshot de leitura ficou
-obsoleto e o SQLite recusa na hora, ignorando `busy_timeout` de propósito. `P1008` puro
-seria largo demais e engoliria transação lenta. Retry sobre violação de unicidade
-(`P2002`) é **proibido**: ali é bug de lógica e mascarar esconderia o problema.
+**Não existe mais retry, e isso é a consequência certa do advisory lock.** No SQLite,
+contenção voltava como erro (`SQLITE_BUSY_SNAPSHOT`) e precisava de nova tentativa com
+backoff. `pg_advisory_xact_lock` **espera** em vez de falhar: quem chega depois fica
+bloqueado até o primeiro commitar, e então lê o `MAX()` já atualizado. Não há contenção
+a retentar, e `ehBancoOcupado` foi removida junto com o SQLite.
+
+**Retry sobre violação de unicidade continua PROIBIDO**, e ficou mais informativo: com
+o lock em vigor, duas emissões do mesmo trio não podem ler o mesmo `MAX()`. Se a
+constraint disparar, a serialização falhou — e o log diz o que suspeitar, em ordem:
+transação saindo pelo pooler, lock tomado depois do `MAX()`, chave do lock diferente da
+esperada. Mascarar com retry esconderia exatamente o defeito que precisa aparecer.
 
 **Teto de tamanho em texto livre.** Célula de planilha estoura em 32.767 caracteres e o
 SheetJS lança ao escrever. Sem teto, um único lote com texto grande derrubaria a
@@ -181,10 +218,12 @@ Estas não são técnicas e são as que matam sistema de órgão público:
 
 1. **Escola ou classe nova passa pelo Samuel.** Não há tela de cadastro. Documentar no
    README a quem recorrer e como pedir.
-2. **A aplicação roda numa máquina só.** Precisa subir sozinha após reboot e ter
-   endereço fixo na rede.
+2. **Os usuários são criados a mão no painel do Supabase.** Pessoa nova no SEOM não
+   entra sozinha. E backup de banco **não traz o Authentication**: restaurar o banco
+   não restaura quem pode entrar.
 3. **Backup precisa ter sido restaurado ao menos uma vez, por outra pessoa**, seguindo
-   o README. Backup nunca testado não é backup.
+   o INSTALL.md. Backup nunca testado não é backup - e aqui restaurar tem duas metades
+   independentes: o banco (pg_restore) e os usuários (recriados a mão).
 4. **Alguém do SEOM treinado** no que fazer quando não abrir e onde está o backup — não
    em usar a tela.
 
@@ -205,15 +244,27 @@ identificador do bem. Decidir uma vez e encerrar.
 esquerda. O campo é texto de propósito — dois CIEs terminam em letra (`007171A`,
 `921518A`) e tratá-los como número truncaria.
 
-**`BEGIN IMMEDIATE` na transação de emissão.** Faria a transação nascer como escritora e
-eliminaria o `SQLITE_BUSY_SNAPSHOT` em vez de retentá-lo. Opcional no volume atual.
+**Colisão de `hashtext` no advisory lock.** A chave `(escola, classe, ano)` passa por
+`hashtext`, que devolve `int4`. Duas chaves diferentes podem colidir nesse espaço — o
+efeito é apenas dois trios distintos se serializando entre si, seguro e no máximo um
+pouco mais lento. O contrário, dois trios **iguais** pegando locks diferentes, é
+impossível: mesma string, mesmo hash. Se a contenção incomodar no futuro, a saída é uma
+tabela de locks com `SELECT FOR UPDATE`, não um hash maior.
+
+**Plano do Supabase e backup.** O que existe em Database → Backups depende do plano.
+Enquanto não houver backup diário garantido, o `pg_dump` semanal do INSTALL.md não é
+opcional.
+
+**Log de cancelamento fica na máquina de quem cancela.** `prisma/cancelamentos.log` não
+está no banco e não entra no `pg_dump`. Se cancelamento passar a ser feito de mais de um
+computador, o registro precisa virar tabela.
 
 ---
 
 ## Antes de virar produção
 
 1. Formato confirmado no sistema do SEOM, com teste de digitação presencial
-2. Aplicação instalada na máquina do SEOM, sobrevivendo a reboot
+2. Deploy na Vercel com as 4 variáveis, e `npm run rls:conferir` limpo
 3. Restauração de backup testada por outra pessoa
 4. Piloto com uma escola, ponta a ponta, até os números entrarem no sistema do SEOM
 5. README revisado por quem não conhece o sistema

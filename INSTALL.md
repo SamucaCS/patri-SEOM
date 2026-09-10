@@ -1,255 +1,240 @@
-# Instalação na máquina do SEOM
+# Instalação e publicação
 
-Guia para instalar o emissor numa máquina que **não tem nada**: sem Node, sem Git, sem
-conta no GitHub. Nada aqui exige conta em serviço nenhum.
+O sistema roda na **Vercel**, com banco **Postgres no Supabase**. Não há máquina do
+setor, não há Node instalado em lugar nenhum, não há pen drive.
 
-O sistema roda **nessa máquina só**, e as outras acessam pelo navegador, pela rede
-local. Não vai para nuvem — o porquê está no README, em "Sem autenticação".
+O que você precisa: uma conta na Vercel, uma conta no Supabase, e o repositório no
+GitHub — que já existe, em <https://github.com/SamucaCS/patri-SEOM>.
 
----
-
-## Antes de começar, responda uma pergunta
-
-**A máquina do setor tem internet?**
-
-- **Tem** → Caminho A. Você carrega 1,1 MB, ou nem isso: baixa direto lá.
-- **Não tem** → Caminho B. Você carrega ~950 MB num pen drive, e há uma exigência
-  extra sobre a versão do Node.
-
-Não precisa de conta no GitHub em nenhum dos dois. O repositório é público: o ZIP baixa
-pelo navegador, sem login.
+> **Node local ainda é necessário para uma coisa:** aplicar migrations, rodar o seed e
+> cancelar lote. São operações de manutenção, feitas da sua máquina contra o banco
+> remoto. A aplicação em si não precisa de nada instalado.
 
 ---
 
-## O que a máquina precisa ter
+## Por que não é SQLite
 
-| Item | Versão | Por quê |
-|------|--------|---------|
-| Windows | x64 | é o que foi testado |
-| Node.js | **24.x** | o pacote `better-sqlite3` é binário nativo, casado com a versão do Node |
-| Espaço livre | ~1,5 GB | `node_modules` sozinho tem 806 MB |
-
-**A versão do Node não é detalhe.** O banco é acessado por um binário compilado
-(`better_sqlite3.node`) que só funciona na ABI do Node para o qual foi instalado. Node
-22 ou 26 dá erro de ABI, com mensagem confusa que não menciona a versão.
+Ficou registrado porque a pergunta volta: a Vercel roda em função serverless, com
+sistema de arquivos efêmero e **instâncias separadas**. Um arquivo SQLite ali seria
+somente-leitura no build, e se fosse gravável cada instância teria a própria cópia —
+duas emissões simultâneas leriam contadores diferentes e produziriam **o mesmo código**
+para bens diferentes. Falha calada, e o sintoma aparece em campo, na etiqueta.
 
 ---
 
-## Caminho A — máquina com internet
+## Parte 1 — Supabase
 
-### 1. Instalar o Node.js
+### 1.1 Criar o projeto
 
-Baixe o instalador **LTS** em <https://nodejs.org> (arquivo `.msi`) e instale com as
-opções padrão. Depois abra o **Prompt de Comando** e confirme:
+Painel do Supabase → **New project**. Região **South America (São Paulo)**, que é
+`sa-east-1`. Guarde a senha do banco que ele pede — ela vai nas duas connection
+strings e não é recuperável depois, só redefinível.
 
-```
-node -v
-```
+### 1.2 Copiar as duas connection strings
 
-Precisa responder `v24.` seguido de algo. Se responder outra coisa, desinstale e
-instale a 24.
+**Project Settings → Database → Connection string.** Você precisa de **duas**, e elas
+são diferentes de propósito:
 
-### 2. Baixar o projeto
+| Variável | Porta | Para quê |
+|----------|-------|----------|
+| `DATABASE_URL` | **6543** | runtime da aplicação. É o *pooler*. Serverless abre muita conexão, e o pooler absorve isso. Precisa terminar com `?pgbouncer=true` |
+| `DIRECT_URL` | **5432** | migrations, seed, scripts, **e a transação de emissão** |
 
-No navegador da máquina, abra:
+**Não troque as duas de lugar.** A transação de emissão pega um advisory lock para
+serializar o contador; pelo pooler em *transaction mode*, os statements da mesma
+transação podem cair em conexões diferentes, o lock deixa de valer para os seguintes, e
+duas emissões voltam a ler o mesmo contador. Não dá erro — dá código duplicado.
 
-<https://github.com/SamucaCS/patri-SEOM/archive/refs/heads/main.zip>
+O sistema tem duas defesas contra essa troca: `npm run verificar` tenta uma transação
+interativa com advisory lock e acusa se não sustentar, e o harness de teste se recusa a
+rodar se `DIRECT_URL` apontar para a porta 6543.
 
-Extraia numa pasta definitiva — **não** em Downloads nem na Área de Trabalho, porque o
-banco de dados vai morar dentro dela. Sugestão:
+### 1.3 Copiar as chaves de autenticação
 
-```
-C:\emissor-seom
-```
+**Project Settings → API:**
 
-A pasta extraída vem com nome `patri-SEOM-main`. Renomeie para `emissor-seom`, ou
-ajuste os caminhos daqui pra frente.
+- `NEXT_PUBLIC_SUPABASE_URL` — a URL do projeto
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — a chave pública (anon / publishable)
 
-### 3. Criar o arquivo `.env`
+Essas duas vão para o navegador e isso é esperado. Não há segredo nelas: quem autoriza é
+a sessão do usuário, e as tabelas do patrimônio estão fechadas por RLS para qualquer
+acesso vindo por essa chave.
 
-Na raiz da pasta, crie um arquivo chamado exatamente `.env` (com o ponto, e sem `.txt`
-no fim) contendo esta única linha:
+### 1.4 Criar as tabelas e carregar as escolas
 
-```
-DATABASE_URL="file:./prisma/emissor.db"
-```
-
-**Este é o passo que mais se esquece.** Sem ele nada sobe, e o erro diz apenas
-"DATABASE_URL nao definida". Há um modelo em `.env.example`: copiar e renomear resolve.
-
-### 4. Instalar as dependências
-
-Abra o Prompt de Comando **na pasta do projeto** e rode:
+Da sua máquina, com o repositório clonado e `npm install` feito, crie um `.env` na raiz
+(há modelo em `.env.example`) com as quatro variáveis. Então:
 
 ```
-npm install
+npm run db:deploy      # cria as tabelas e aplica o RLS
+npm run db:seed        # carrega as 64 unidades e as 3 classes
+npm run verificar      # confirma que está tudo de pé
+npm run rls:conferir   # confirma RLS tabela por tabela
 ```
 
-Demora alguns minutos e baixa cerca de 800 MB. É a única etapa que precisa de internet.
-
-Ao terminar, ele roda `prisma generate` sozinho — é o que cria a pasta
-`src/generated/prisma`, que **não vem no download** porque é gerada, não escrita à mão.
-Se algum comando adiante reclamar de `Cannot find module '../src/generated/prisma/client'`,
-rode:
-
-```
-npm run db:generate
-```
-
-### 5. Criar o banco e carregar as escolas
-
-```
-npm run db:deploy
-npm run db:seed
-```
-
-O primeiro cria as tabelas. O segundo carrega as **64 unidades** (a URE mais 63
-escolas) e as **3 classes**. Confira:
-
-```
-npm run verificar
-```
-
-Precisa responder:
+`npm run verificar` precisa terminar com:
 
 ```
 Banco: 64 escolas, 3 classes, 0 códigos.
 Nenhum problema encontrado.
 ```
 
-**Se o número de códigos não for 0**, este banco não está limpo. Pare e avise: emitir a
-partir de um banco com códigos de teste embaralha o sequencial, e código emitido nunca
-é reaproveitado.
+**Se o número de códigos não for 0**, pare: emitir a partir de um banco com códigos de
+teste embaralha o sequencial, e código emitido nunca é reaproveitado.
 
-### 6. Gerar a versão de produção e subir
+`npm run rls:conferir` precisa mostrar todas as tabelas com RLS **ativo** e **forçado**,
+zero políticas permissivas, e nenhum privilégio para `anon`/`authenticated`. Ele sai com
+erro se qualquer tabela estiver descoberta.
 
+### 1.5 Criar os usuários — um por um, na mão
+
+**Authentication → Users → Add user**, com **Create new user** e senha definida por
+você. Marque *Auto Confirm User*.
+
+Não existe cadastro aberto, não existe recuperação de senha por e-mail e não existe
+convite por link. Isso é decisão, não pendência: são poucas pessoas, todas conhecidas, e
+a alternativa seria uma superfície de auto-cadastro num sistema que emite identificador
+de patrimônio.
+
+Para que o nome da pessoa apareça em "Emitido por" em vez do e-mail, preencha o
+**User Metadata** com:
+
+```json
+{ "nome": "Samuel Silva" }
 ```
-npm run build
-npm start
-```
 
-O `build` demora um ou dois minutos, e só precisa rodar de novo quando o código mudar.
-O `start` é o que fica no ar. Ele imprime dois endereços:
+Sem isso, "Emitido por" grava o e-mail. Funciona, mas fica feio na planilha.
 
-```
-- Local:   http://localhost:3000
-- Network: http://10.x.x.x:3000
-```
+### 1.6 Desligar o auto-cadastro
 
-O segundo é o que as outras máquinas do setor usam. **Anote.**
+**Authentication → Providers → Email:** deixe *Enable email provider* ligado e
+**desligue _Enable sign ups_**. Sem isso, qualquer pessoa com a URL cria a própria conta
+e passa a emitir código de patrimônio.
 
-Enquanto essa janela do Prompt estiver aberta, o sistema está no ar; fechar a janela
-derruba. O passo "Subir sozinha depois do reboot", abaixo, resolve isso.
+Confirme também que os outros provedores (Google, GitHub, etc.) estão desligados.
 
 ---
 
-## Caminho B — máquina sem internet
+## Parte 2 — Vercel
 
-Aqui você leva tudo pronto. Só funciona se as duas máquinas tiverem **o mesmo sistema e
-a mesma versão maior do Node** — de novo, por causa do binário nativo.
+### 2.1 Importar o repositório
 
-### 1. Na máquina que tem internet
+Painel da Vercel → **Add New → Project** → importe `SamucaCS/patri-SEOM`. Framework
+detectado: Next.js. Não mude nada de build.
 
-Confirme plataforma e versão:
+### 2.2 Variáveis de ambiente
+
+Antes do primeiro deploy, em **Environment Variables**, as quatro:
 
 ```
-node -v
-node -e "console.log(process.platform, process.arch)"
+DATABASE_URL                    (pooler, 6543, com ?pgbouncer=true)
+DIRECT_URL                      (direta, 5432)
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
 ```
 
-Anote as duas respostas. Faça o Caminho A inteiro, até o passo 6, e confirme que o
-sistema abre no navegador.
+Marque as quatro para **Production**, **Preview** e **Development**.
 
-### 2. Copie para o pen drive
+Sem `DATABASE_URL`/`DIRECT_URL` a aplicação sobe e falha na primeira consulta. Sem as
+duas do Supabase, o middleware **falha fechado** e manda todo mundo para o login, que
+por sua vez não consegue autenticar — a tela responde, mas ninguém entra. Foi escolhido
+assim de propósito: melhor ninguém entrar do que todos entrarem sem sessão.
 
-A pasta **inteira**, incluindo `node_modules` e `.next` — é justamente o que dispensa a
-internet do outro lado. Cerca de 950 MB.
+### 2.3 Publicar
 
-Copie junto o instalador `.msi` do Node.js, na mesma versão.
+**Deploy.** Ao terminar, abra a URL: precisa cair na tela de login. Entre com um dos
+usuários criados no passo 1.5 e confirme que:
 
-**Não copie o `prisma/emissor.db`** se você emitiu qualquer código de teste. Melhor
-levar sem banco e rodar `db:deploy` e `db:seed` do outro lado — os dois funcionam
-offline.
-
-### 3. Na máquina do setor
-
-1. Instale o Node pelo `.msi` do pen drive.
-2. Confirme que `node -v` responde a **mesma versão maior** anotada no passo 1.
-3. Copie a pasta do pen drive para `C:\emissor-seom`.
-4. Confirme que o `.env` veio junto: arquivo que começa com ponto às vezes não copia.
-5. Rode `npm run db:deploy`, `npm run db:seed` e `npm run verificar`.
-6. Rode `npm start`.
-
-Não rode `npm install` aqui: sem internet ele falha e pode deixar o `node_modules` pela
-metade. Se precisar reinstalar, volte para a máquina com internet.
-
-**Se aparecer erro citando `NODE_MODULE_VERSION` ou `better_sqlite3.node`**, é a versão
-do Node diferente. Não há contorno local: instale a versão certa.
+- a tela de emissão abre e mostra seu nome em "Emitido por";
+- "Emitido por" **não é editável** — é a sua sessão;
+- a consulta lista e a exportação baixa o `.xlsx`;
+- **Sair** derruba a sessão e volta ao login;
+- abrir a URL numa janela anônima cai no login, sem ver dado nenhum.
 
 ---
 
-## Depois de instalar
+## Parte 3 — Backup, e como restaurar
 
-Instalar não é entregar. Faltam quatro coisas, e são elas que fazem o sistema sobreviver
-ao dia a dia.
+Backup que nunca foi restaurado não é backup. Esta seção tem as duas metades.
 
-### Subir sozinha depois do reboot
+### 3.1 O que o Supabase faz sozinho
 
-Sem isso, todo desligamento derruba o sistema e alguém precisa saber reabrir o Prompt.
+**Database → Backups** no painel. **O que existe ali depende do seu plano** — confira
+antes de contar com isso:
 
-Crie um arquivo `iniciar.cmd` na pasta do projeto:
+- plano gratuito: sem backup automático garantido;
+- planos pagos: backup diário, com retenção conforme o plano;
+- PITR (recuperação a um instante exato): add-on separado.
+
+**Se o painel não mostrar backup diário, o item 3.2 não é opcional.**
+
+### 3.2 Backup manual — funciona em qualquer plano
+
+Da sua máquina, semanalmente:
 
 ```
-@echo off
-cd /d C:\emissor-seom
-npm start
+pg_dump "$DIRECT_URL" -Fc -f emissor-2026-09-10.dump
 ```
 
-Depois, no **Agendador de Tarefas** do Windows:
+Precisa do `pg_dump` instalado (vem com o PostgreSQL client). Guarde o arquivo no
+SharePoint do setor, com a data no nome.
 
-1. Criar Tarefa — não "Tarefa Básica".
-2. Aba **Geral**: marque *Executar estando o usuário conectado ou não* e *Executar com
-   privilégios mais altos*.
-3. Aba **Disparadores**: novo, *Ao iniciar o computador*.
-4. Aba **Ações**: iniciar programa → `C:\emissor-seom\iniciar.cmd`.
-5. Aba **Configurações**: **desmarque** *Parar a tarefa se for executada por mais de...*
-   — senão o Windows derruba o servidor depois de três dias.
+### 3.3 A segunda cópia, que não depende de banco
 
-Teste reiniciando a máquina e abrindo o endereço de outra máquina, **sem fazer login**
-na máquina do servidor.
+Exportar o `.xlsx` pela tela de Consulta, **sem filtro**, e enviar ao SharePoint.
 
-### Endereço fixo na rede
+Isso não é redundância boba: é a única cópia legível sem Postgres, sem credencial e sem
+ferramenta. Se o Supabase ficar inacessível, é o que responde "qual código já foi
+emitido" — que é a pergunta cuja resposta errada gera patrimônio duplicado.
 
-O `http://10.x.x.x:3000` muda se o IP vier por DHCP. Peça à TI um **IP fixo** ou uma
-**reserva de DHCP** para essa máquina. Sem isso o endereço muda sozinho e o sistema
-"para de funcionar" sem ninguém ter mexido em nada.
+### 3.4 Como restaurar
 
-### Liberar a porta no firewall
+**Para um instante anterior, no mesmo projeto** (precisa de PITR no plano):
+Database → Backups → escolha o ponto → **Restore**. Derruba o banco por alguns minutos.
 
-Se as outras máquinas não abrirem o endereço, é o Firewall do Windows. Libere a porta
-`3000` para **entrada**, com escopo de rede local apenas.
+**De um `.dump` para um projeto novo:**
 
-### Backup semanal
+1. Crie um projeto Supabase novo.
+2. Pegue a `DIRECT_URL` dele.
+3. Restaure:
 
-Está no README, na seção **Backup**, e precisa de destino definido — o SharePoint do
-setor. São duas partes: exportar o `.xlsx` da tela de Consulta e copiar os arquivos do
-banco com a aplicação parada.
+   ```
+   pg_restore -d "$DIRECT_URL_NOVA" --no-owner --no-privileges emissor-2026-09-10.dump
+   ```
 
-**Restaure o backup uma vez, em outra pasta, por outra pessoa, antes de considerar isso
-pronto.** Backup nunca restaurado não é backup.
+4. Rode `npm run rls:conferir` apontando para o banco novo. **`--no-privileges` não
+   traz os privilégios, então o RLS precisa ser reaplicado:**
+
+   ```
+   npm run db:deploy
+   ```
+
+5. Rode `npm run verificar` e confira a contagem de códigos contra o último `.xlsx`
+   exportado.
+6. Recrie os usuários — `pg_restore` do banco **não traz o Authentication**. Essa é a
+   pegadinha desta arquitetura: banco e usuários são backups separados.
+7. Atualize as quatro variáveis na Vercel e faça um redeploy.
+
+### 3.5 Faça isso uma vez, antes de considerar pronto
+
+Restaure um `.dump` num projeto Supabase descartável, seguindo o 3.4 inteiro, e confira
+a contagem de códigos. **Peça para outra pessoa fazer**, seguindo só este texto. Se ela
+travar em algum passo, o texto está errado — não ela.
 
 ---
 
-## Quando não abrir
+## Quando não funcionar
 
 | Sintoma | Causa provável | O que fazer |
 |---------|----------------|-------------|
-| "DATABASE_URL nao definida" | falta o `.env` | crie o `.env` do passo 3 |
-| "Cannot find module '../src/generated/prisma/client'" | o client do Prisma não foi gerado | `npm run db:generate` |
-| erro citando `NODE_MODULE_VERSION` | versão errada do Node | instale a 24.x |
-| abre em `localhost` mas não nas outras máquinas | firewall, ou o IP mudou | libere a porta 3000; confira o IP |
-| a tela mostra aviso no topo | integridade do banco | rode `npm run verificar` e leia a mensagem |
-| não abre depois de um reboot | a tarefa agendada não subiu | abra o Agendador e veja o histórico da tarefa |
+| tudo cai no login, mesmo com senha certa | falta `NEXT_PUBLIC_SUPABASE_*` na Vercel | confira as 4 variáveis e faça redeploy |
+| "E-mail ou senha incorretos" com senha certa | usuário não confirmado | painel → Users → Auto Confirm |
+| `verificar` acusa que a conexão de emissão não sustentou advisory lock | `DIRECT_URL` está no pooler (6543) | troque para 5432 |
+| erro de "too many connections" | a aplicação está usando a direta em runtime | `DATABASE_URL` precisa ser a 6543 com `?pgbouncer=true` |
+| `SEQUENCIAL_DUPLICADO` na emissão | o advisory lock não está protegendo | é bug, não contenção. Veja o log do servidor: ele diz o que suspeitar, em ordem |
+| testes recusam rodar citando porta 6543 | `DIRECT_URL` errada no `.env` local | idem: 5432 |
+| `Cannot find module '../src/generated/prisma/client'` | client do Prisma não gerado | `npm run db:generate` |
+| a exportação devolve 401 | sem sessão | entre no sistema |
 
 O comando que responde a maior parte das dúvidas:
 
@@ -257,15 +242,39 @@ O comando que responde a maior parte das dúvidas:
 npm run verificar
 ```
 
-Ele diz quantas escolas, classes e códigos existem, e sai com erro se achar problema.
-Rode depois de restaurar backup, e sempre que o banco tiver sido tocado por fora.
+Ele conta escolas, classes e códigos, checa se a conexão de emissão sustenta transação
+com advisory lock, e confirma que todo código gravado ainda bate com a sigla atual da
+escola e da classe.
 
 ---
 
-## O que NÃO fazer nessa máquina
+## Cancelar um lote
 
-- **Não** abra o `prisma/emissor.db` em editor, nem copie por cima com o sistema no ar.
-- **Não** conte com o `npm run db:seed` para corrigir sigla de escola que já emitiu
-  código: ele aborta de propósito. Sigla é imutável depois da primeira emissão.
-- **Não** exponha essa máquina para fora da rede do setor. Não há autenticação: qualquer
-  um com o endereço emite código, e código emitido nunca é reaproveitado.
+Não tem tela, e o caminho é a sua máquina contra o banco remoto:
+
+```
+npm run cancelar -- <id-do-lote> --por "Seu nome"
+```
+
+Ele mostra o lote inteiro, exige que você digite `CANCELAR`, cancela todos os códigos
+daquele lote e registra em `prisma/cancelamentos.log`.
+
+Dois avisos que valem mais desde a migração:
+
+- **O log fica na sua máquina, não no banco.** Quem cancelar de outro computador gera um
+  log lá. Se isso passar a acontecer, o registro precisa virar tabela.
+- **Cancelar não libera número.** O sequencial não retrocede e aqueles códigos seguem
+  ocupados para sempre.
+
+---
+
+## O que NÃO fazer
+
+- **Não** aponte `DATABASE_URL` para a porta 5432 "para simplificar". A aplicação
+  esgotaria as conexões do Postgres na primeira hora de uso real.
+- **Não** aponte `DIRECT_URL` para o pooler. É a falha calada desta arquitetura.
+- **Não** ligue *Enable sign ups* no Supabase.
+- **Não** use a `service_role key` na aplicação. Ela ignora RLS; não há motivo para ela
+  existir aqui.
+- **Não** crie tabela nova sem RLS. Tabela nova nasce **descoberta**, e a API REST do
+  Supabase a publica. Rode `npm run rls:conferir` depois de qualquer migration.

@@ -44,7 +44,7 @@ SUZ-BR20260001-MOBI
    base sem backup e sem explicação visível.
 7. **Unidade inativa não emite**, e a trava é do servidor. A tela filtra o seletor,
    mas uma aba aberta antes da desativação ainda tem a escola na lista.
-8. **Siglas são sempre maiúsculas.** No SQLite, `Tec` e `TEC` são valores distintos:
+8. **Siglas são sempre maiúsculas.** Para a constraint de unicidade, `Tec` e `TEC` são valores distintos:
    aceitar caixa mista seria uma fábrica de código duplicado.
 9. **Não há dígito verificador.** Decisão do cliente.
 10. **O ano do código vem do relógio do servidor, no fuso de Suzano** — nunca do
@@ -122,29 +122,45 @@ aquela checagem existe para pegar.
 
 ## Stack
 
-Next.js 15 · React 19 · TypeScript · Tailwind 4 · Prisma 7 + SQLite · SheetJS ·
-Vitest.
+Next.js 15 · React 19 · TypeScript · Tailwind 4 · Prisma 7 + **Postgres (Supabase)** ·
+Supabase Auth · SheetJS · Vitest. Hospedado na **Vercel**.
 
-O banco é um arquivo local (`prisma/emissor.db`). Não há serviço externo nem conta em
-lugar nenhum.
+**Duas conexões, de propósito** (ver `src/lib/prisma.ts`):
 
-O SQLite é adequado aqui porque o volume é de alguns lotes por semana e porque ele
-serializa escritas por natureza — duas emissões simultâneas não conseguem gravar ao
-mesmo tempo, o que elimina a classe de bug mais perigosa deste sistema.
+| Variável | Porta | Usada por |
+| --- | --- | --- |
+| `DATABASE_URL` | 6543 (pooler) | uso geral em runtime |
+| `DIRECT_URL` | 5432 (direta) | migrations, seed, scripts e **a transação de emissão** |
+
+Era SQLite até a migração para a Vercel. Não é detalhe de infraestrutura: o SQLite
+serializava escrita por natureza, e era isso que impedia duas emissões simultâneas de
+lerem o mesmo contador. **O Postgres não faz isso.** Em `READ COMMITTED` — o padrão —
+duas transações leem o mesmo `MAX(sequencial)` e as duas seguem.
+
+O que ocupou esse lugar é um `pg_advisory_xact_lock` na chave `(escola, classe, ano)`,
+tomado **antes** da leitura, dentro da mesma transação. Ele espera em vez de falhar, e
+por isso o retry que existia no SQLite desapareceu: não há contenção a retentar.
 
 ## Instalação
 
+Publicação na Vercel, criação do projeto Supabase, RLS, usuários e backup estão em
+**[INSTALL.md](INSTALL.md)**. Para mexer no código localmente:
+
 ```bash
-npm install
-cp .env.example .env      # confira o caminho do banco
-npx prisma generate       # gera o client em src/generated/prisma
-npx prisma migrate deploy # cria o banco e aplica as migrations
+npm install               # o postinstall roda prisma generate
+cp .env.example .env      # preencha as 4 variáveis
+npm run db:deploy         # cria as tabelas e aplica o RLS
 npm run db:seed           # carrega as 64 unidades e as 3 classes
 npm run verificar         # confere a integridade
+npm run rls:conferir      # confere RLS tabela por tabela
 ```
 
-O `prisma generate` não é opcional em clone novo: `src/generated/prisma` não vai para
-o git, e sem ele o build e o typecheck falham por módulo inexistente.
+As quatro variáveis são obrigatórias: `DATABASE_URL`, `DIRECT_URL`,
+`NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+
+**`DIRECT_URL` precisa ser a conexão direta (5432), nunca o pooler.** Os testes se
+recusam a rodar se ela apontar para 6543 — pelo pooler, o advisory lock não sobrevive à
+transação e o teste de concorrência passaria sem testar nada.
 
 O seed é idempotente (upsert pelo código CIE), então rodar de novo não duplica nada e
 não toca em código já emitido.
@@ -164,49 +180,64 @@ A aplicação roda na máquina do SEOM, acessível só na rede local.
 | Script | O que faz |
 | --- | --- |
 | `npm run dev` / `build` / `start` | ciclo normal do Next |
-| `npm test` / `npm run test:watch` | Vitest contra SQLite real |
+| `npm test` / `npm run test:watch` | Vitest contra Postgres real, um schema por arquivo |
 | `npm run typecheck` / `npm run lint` | `tsc --noEmit` / ESLint |
 | `npm run db:migrate` | cria migration em desenvolvimento |
 | `npm run db:deploy` | aplica migrations existentes (produção) |
+| `npm run db:generate` | gera o client do Prisma (roda sozinho no `npm install`) |
 | `npm run db:seed` | carrega `prisma/escolas.ts` no banco |
+| `npm run rls:conferir` | lista RLS tabela por tabela, sai com 1 se algo estiver descoberto |
 | `npm run db:studio` | Prisma Studio — inspeção e correção manual |
 | `npm run verificar` | verificação de integridade, sai com 1 se achar erro |
 | `npm run cancelar -- <id> --por "Nome"` | cancela os códigos de um lote (pede confirmação) |
 
-### Sem autenticação — e por quê
+### Autenticação
 
-Não há login no MVP. O campo **“Emitido por”** é preenchido pelo operador e serve de
-rastro de auditoria, não de segurança. Nessa escala e nessa rede, resolve.
+**Supabase Auth, e-mail e senha.** Usuário é criado a mão no painel do Supabase, pela
+equipe do SEOM: não há cadastro aberto, nem recuperação por e-mail, nem convite por
+link. São poucas pessoas, todas conhecidas, e a alternativa seria uma superfície de
+auto-cadastro num sistema que emite identificador de patrimônio.
 
-**Se a aplicação for exposta fora da rede local, isso muda e autenticação passa a ser
-obrigatória.** Não é uma decisão para adiar nesse cenário.
+Não havia login enquanto o sistema vivia na rede local. Publicado na Vercel, passou a
+ser obrigatório — era o que o próprio README já dizia que aconteceria.
+
+**“Emitido por” vem da sessão**, não de campo digitado. A tela mostra o nome, mas o
+cliente nem envia o valor: a server action lê a sessão de novo no servidor. Antes era
+texto livre lembrado no `localStorage`, e qualquer pessoa assinava um lote com o nome
+de outra — num sistema cujo único rastro de autoria é esse campo.
+
+**Duas camadas, de propósito.** O middleware barra navegação sem sessão; cada rota
+também chama `exigirOperador()`. A segunda é a que vale: Server Action e Route Handler
+são endpoints HTTP e podem ser chamados direto, sem passar por navegação.
+
+**RLS está ativo e forçado em todas as tabelas** — e é importante saber o que isso
+protege. O Supabase publica uma API REST sobre o schema `public`, acessível com a chave
+pública que está no navegador; sem RLS, a base inteira sairia por ali. **RLS não
+restringe a aplicação**: o Prisma conecta como dono das tabelas e bypassa RLS por
+definição do Postgres. A barreira do app é a sessão. Confira com `npm run rls:conferir`.
 
 ## Backup
 
-O banco inteiro é um arquivo. Sem a rotina abaixo, o sistema depende de uma máquina
-só — e perder esse arquivo significa perder o registro de qual código já foi emitido,
-o que leva direto a códigos duplicados em campo.
+Perder o registro de qual código já foi emitido leva direto a códigos duplicados em
+campo. O procedimento completo, **incluindo como restaurar**, está em
+**[INSTALL.md](INSTALL.md#parte-3--backup-e-como-restaurar)**. Em resumo:
 
 **Toda semana:**
 
 1. Exportar `.xlsx` pela tela de Consulta, sem filtro (a base inteira), e enviar ao
-   SharePoint. Serve também de espelho de consulta para quem não tem acesso à máquina.
-2. Copiar o arquivo do banco junto:
+   SharePoint. É a única cópia legível sem Postgres, sem credencial e sem ferramenta.
+2. `pg_dump "$DIRECT_URL" -Fc -f emissor-AAAA-MM-DD.dump`, guardado com a data no nome.
 
-   ```
-   prisma/emissor.db
-   prisma/emissor.db-wal
-   prisma/emissor.db-shm
-   prisma/cancelamentos.log
-   ```
+O backup automático do Supabase (Database → Backups) **depende do plano** — confira o
+que existe no seu antes de contar com ele. Se não houver backup diário, o `pg_dump` não
+é opcional.
 
-   Copie todos, e com a aplicação parada. O `.log` só existe se algum lote já foi
-   cancelado; é a única memória de quem cancelou o quê. O `-wal` guarda escritas que ainda não
-   foram para o arquivo principal: copiar só o `.db` com o servidor no ar pode
-   capturar um estado incompleto.
+**Duas pegadinhas desta arquitetura:**
 
-**Para restaurar:** pare a aplicação, coloque os arquivos de volta em `prisma/`,
-e rode `npm run verificar` antes de emitir qualquer coisa.
+- `pg_restore` traz o banco, **não traz o Authentication**. Os usuários são um backup
+  separado e precisam ser recriados a mão.
+- `prisma/cancelamentos.log` fica na **máquina de quem cancelou**, não no banco. Não
+  entra no `pg_dump`.
 
 ## Verificação de integridade
 
@@ -217,7 +248,9 @@ npm run verificar
 Procura estados que a aplicação não consegue causar sozinha, mas que um banco
 restaurado errado ou uma edição feita direto no arquivo conseguem:
 
-- `journal_mode` diferente de WAL
+- **a conexão de emissão não sustenta transação interativa com advisory lock** — é o
+  sintoma de `DIRECT_URL` apontando para o pooler, que quebraria a serialização do
+  contador em silêncio
 - sigla de escola com largura errada, ou fora do padrão maiúsculo
 - sigla de classe fora da faixa de 2 a 4
 - CIE ainda provisório
@@ -234,14 +267,20 @@ npm run typecheck
 npm run lint
 ```
 
-Os testes rodam contra **SQLite real em disco**, com as migrations de verdade
-aplicadas. Nenhum usa mock do Prisma — um teste de concorrência com Prisma mockado
-passa sempre e não prova nada. Cada arquivo abre seu próprio banco temporário e eles
-rodam em série (`fileParallelism: false`).
+Os testes rodam contra **Postgres real**, com as migrations de verdade aplicadas.
+Nenhum usa mock do Prisma — um teste de concorrência com Prisma mockado passa sempre e
+não prova nada. Cada arquivo cria seu próprio **schema** temporário (`teste_<hex>`),
+derrubado no fim, e eles rodam em série (`fileParallelism: false`).
 
-Cobrem, entre outros: formato do código, isolamento por classe, reinício anual,
-não reaproveitamento após cancelamento, concorrência, teto por ano, imutabilidade da
-sigla e ordem das colunas da exportação.
+Precisam de `DIRECT_URL` no `.env`, apontando para a conexão direta. O harness
+**recusa** rodar contra o pooler: sem conexão estável, o advisory lock não sobrevive à
+transação e o teste de concorrência passaria sem exercitar nada.
+
+Cobrem, entre outros: formato do código, isolamento por classe, reinício anual, não
+reaproveitamento após cancelamento, concorrência, teto por ano, imutabilidade da sigla
+e ordem das colunas da exportação. E dois específicos desta arquitetura: que o advisory
+lock **aparece de fato em `pg_locks`** durante a emissão, e que ele **desaparece** no
+commit sem unlock explícito.
 
 ## Onde as regras moram
 
@@ -250,15 +289,18 @@ Antes de mexer, é aqui que estão as decisões:
 | Arquivo | Responsabilidade |
 | --- | --- |
 | `src/lib/config.ts` | formato do código: larguras, separadores, teto, `LOTE_MAX`, regex |
-| `src/lib/emissao.ts` | transação da emissão, cálculo do sequencial, retry em contenção |
+| `src/lib/emissao.ts` | transação da emissão, advisory lock, cálculo do sequencial |
 | `src/lib/cadastros.ts` | sigla imutável após emissão (sem tela; ver Como mexer no cadastro) |
 | `src/lib/consultas.ts` | filtros compartilhados pela tela e pela exportação |
 | `src/lib/exportacao.ts` | geração do `.xlsx` e ordem das colunas |
 | `src/lib/boot.ts` | verificação de integridade (usada pela tela e pelo CLI) |
-| `src/lib/prisma.ts` | client, WAL, `busy_timeout` |
+| `src/lib/prisma.ts` | os dois clients: pooler para uso geral, direto para a emissão |
 | `prisma/escolas.ts` | as 64 unidades e as 3 classes — fonte da verdade |
 | `prisma/schema.prisma` | modelo e o `@@unique` que é a rede de segurança |
-| `src/test/banco.ts` | banco SQLite real usado pelos testes |
+| `src/test/banco.ts` | schema Postgres temporário usado pelos testes |
+| `src/lib/sessao.ts` | quem está operando; `exigirOperador()` |
+| `src/middleware.ts` | barra navegação sem sessão e renova o token |
+| `prisma/migrations/*_rls/` | RLS ativo e forçado em todas as tabelas |
 
 O sequencial **não** vem de tabela de contadores: é `MAX(sequencial)` lido e gravado
 na mesma transação interativa. É isso que impede duas emissões simultâneas de

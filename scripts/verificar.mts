@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { verificarIntegridade } from "../src/lib/boot";
-import { criarPrismaClient, garantirWal } from "../src/lib/prisma";
+import { criarPrismaClient, criarPrismaClientDireto } from "../src/lib/prisma";
 
 /**
  * Verificação de integridade pela linha de comando.
@@ -11,9 +11,9 @@ import { criarPrismaClient, garantirWal } from "../src/lib/prisma";
  */
 
 const prisma = criarPrismaClient();
-await garantirWal(prisma);
+const prismaDireto = criarPrismaClientDireto();
 
-const problemas = await verificarIntegridade(prisma);
+const problemas = await verificarIntegridade(prisma, prismaDireto);
 
 const erros = problemas.filter((p) => p.nivel === "erro");
 const avisos = problemas.filter((p) => p.nivel === "aviso");
@@ -34,5 +34,5 @@ if (problemas.length === 0) {
   console.log(`\n${erros.length} erro(s), ${avisos.length} aviso(s).`);
 }
 
-await prisma.$disconnect();
+await Promise.all([prisma.$disconnect(), prismaDireto.$disconnect()]);
 process.exit(erros.length > 0 ? 1 : 0);

@@ -12,7 +12,7 @@ import {
   SIGLA_ESCOLA_LENGTH,
   montarCodigo,
 } from "./config";
-import { getPrisma } from "./prisma";
+import { getPrismaDireto } from "./prisma";
 
 export { montarCodigo };
 
@@ -21,6 +21,10 @@ export type EmitirLoteInput = {
   classeId: string;
   quantidade: number;
   descricao: string;
+  /**
+   * Quem esta emitindo. Vem da SESSAO, preenchido pela server action - nao e mais
+   * campo digitado na tela. Continua parametro aqui para os testes controlarem.
+   */
   emitidoPor: string;
 };
 
@@ -52,8 +56,7 @@ export type EmissaoErroCodigo =
   | "CLASSE_INATIVA"
   | "SIGLA_INVALIDA"
   | "TETO_EXCEDIDO"
-  | "SEQUENCIAL_DUPLICADO"
-  | "BANCO_OCUPADO";
+  | "SEQUENCIAL_DUPLICADO";
 
 export class EmissaoError extends Error {
   readonly codigo: EmissaoErroCodigo;
@@ -69,16 +72,19 @@ export class EmissaoError extends Error {
   }
 }
 
-/** Tentativas totais em cima de contencao de escrita. Nunca em cima de unicidade. */
-const MAX_TENTATIVAS = 3;
-const BACKOFF_BASE_MS = 25;
-
-
 /**
  * Emite um lote de codigos para um trio (escola, classe, ano).
  *
  * O sequencial reinicia em 1 a cada ano. Isso nao reaproveita codigo: o ano faz parte
  * do codigo, entao SUZ-BR20260001-TEC e SUZ-BR20270001-TEC sao codigos diferentes.
+ *
+ * Roda na conexao DIRETA, nunca no pooler - ver `getPrismaDireto` e o comentario do
+ * advisory lock em `emitirLoteUmaVez`.
+ *
+ * Nao ha retry, e nao deveria haver. No SQLite, contencao voltava como erro
+ * (SQLITE_BUSY_SNAPSHOT) e precisava de nova tentativa. No Postgres o advisory lock
+ * ESPERA: quem chega depois fica bloqueado ate o primeiro commitar, e ai le o MAX() ja
+ * atualizado. Nao ha o que retentar.
  */
 export async function emitirLote(
   input: EmitirLoteInput,
@@ -89,55 +95,36 @@ export async function emitirLote(
   validarEntrada(input);
   validarAno(ano);
 
-  const db = opcoes.client ?? getPrisma();
-  let ultimoErroDeLock: unknown;
+  const db = opcoes.client ?? getPrismaDireto();
 
-  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
-    try {
-      return await emitirLoteUmaVez(input, ano, db);
-    } catch (erro) {
-      // Violacao de unicidade e bug de logica, nao contencao. Mascarar com retry
-      // esconderia o problema: erro explicito e log, sem nova tentativa.
-      if (ehViolacaoDeUnicidade(erro)) {
-        console.error(
-          "[emissao] Constraint de unicidade violada ao emitir lote. Isso e bug de " +
-            "logica no calculo do sequencial, nao contencao de escrita. " +
-            `escolaId=${input.escolaId} classeId=${input.classeId} ano=${ano} ` +
-            `quantidade=${input.quantidade}`,
-          erro,
-        );
-        throw new EmissaoError(
-          "SEQUENCIAL_DUPLICADO",
-          "Sequencial duplicado detectado pelo banco. A emissao foi abortada e nada " +
-            "foi gravado. Isso indica falha na logica de emissao - reporte ao suporte.",
-          { cause: erro },
-        );
-      }
-
-      // Qualquer outro erro que nao seja contencao sobe direto.
-      if (!ehBancoOcupado(erro)) {
-        throw erro;
-      }
-
-      ultimoErroDeLock = erro;
-
-      if (tentativa < MAX_TENTATIVAS) {
-        const espera = BACKOFF_BASE_MS * 2 ** (tentativa - 1) + Math.random() * 25;
-        console.warn(
-          `[emissao] Banco ocupado (tentativa ${tentativa}/${MAX_TENTATIVAS}). ` +
-            `Nova tentativa em ${Math.round(espera)}ms.`,
-        );
-        await esperar(espera);
-      }
+  try {
+    return await emitirLoteUmaVez(input, ano, db);
+  } catch (erro) {
+    // Violacao de unicidade continua PROIBIDA de virar retry. Com o advisory lock em
+    // vigor, duas emissoes do mesmo trio nao podem ler o mesmo MAX(): se a constraint
+    // disparou, a serializacao falhou - chave do lock errada, lock tomado depois do
+    // SELECT, ou a transacao saiu pelo pooler em vez da conexao direta. Retentar
+    // esconderia exatamente o defeito que precisa aparecer.
+    if (ehViolacaoDeUnicidade(erro)) {
+      console.error(
+        "[emissao] Constraint de unicidade violada ao emitir lote. Com o advisory " +
+          "lock ativo isso NAO deveria acontecer. Suspeitar, nesta ordem: transacao " +
+          "saindo pelo pooler (precisa ser DIRECT_URL); lock tomado depois do MAX(); " +
+          "chave do lock diferente da esperada. " +
+          `escolaId=${input.escolaId} classeId=${input.classeId} ano=${ano} ` +
+          `quantidade=${input.quantidade}`,
+        erro,
+      );
+      throw new EmissaoError(
+        "SEQUENCIAL_DUPLICADO",
+        "Sequencial duplicado detectado pelo banco. A emissao foi abortada e nada " +
+          "foi gravado. Isso indica falha na logica de emissao - reporte ao suporte.",
+        { cause: erro },
+      );
     }
-  }
 
-  throw new EmissaoError(
-    "BANCO_OCUPADO",
-    `O banco ficou ocupado nas ${MAX_TENTATIVAS} tentativas. Nenhum codigo foi ` +
-      "emitido. Tente novamente em alguns segundos.",
-    { cause: ultimoErroDeLock },
-  );
+    throw erro;
+  }
 }
 
 /**
@@ -152,6 +139,26 @@ async function emitirLoteUmaVez(
 ): Promise<EmitirLoteResultado> {
   return client.$transaction(
     async (tx) => {
+      // 0. SERIALIZACAO DO TRIO. Precisa vir ANTES do MAX(), senao nao serve de nada.
+      //
+      //    No SQLite isso era de graca: o banco serializa escrita por natureza, e duas
+      //    transacoes nunca liam o mesmo MAX(). O Postgres nao faz isso. Em READ
+      //    COMMITTED - o isolamento padrao - duas transacoes leem o mesmo MAX(), montam
+      //    o mesmo sequencial, e a segunda so descobre no INSERT, quando a constraint
+      //    dispara e a emissao inteira e perdida.
+      //
+      //    `pg_advisory_xact_lock` bloqueia em vez de falhar, e e liberado no COMMIT ou
+      //    ROLLBACK sem unlock explicito: transacao que morre no meio nao deixa lock
+      //    preso.
+      //
+      //    A chave (escolaId, classeId, ano) passa por `hashtext`, que devolve int4.
+      //    Duas chaves diferentes podem colidir nesse espaco; o efeito e apenas dois
+      //    trios distintos se serializando entre si - seguro, no maximo um pouco mais
+      //    lento. O contrario, dois trios IGUAIS pegando locks diferentes, e
+      //    impossivel: mesma string, mesmo hash. E e so isso que a corretude exige.
+      const chaveDoLock = `${input.escolaId}:${input.classeId}:${ano}`;
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${chaveDoLock})::bigint)`;
+
       const escola = await tx.escola.findUnique({ where: { id: input.escolaId } });
       if (!escola) {
         throw new EmissaoError(
@@ -296,7 +303,7 @@ function validarEntrada(input: EmitirLoteInput): void {
   if (emitidoPor.length === 0) {
     throw new EmissaoError(
       "EMITIDO_POR_INVALIDO",
-      "Informe quem esta emitindo o lote.",
+      "Nao foi possivel identificar quem esta emitindo. Entre no sistema de novo.",
     );
   }
   if (emitidoPor.length > EMITIDO_POR_MAX_LENGTH) {
@@ -358,8 +365,8 @@ function validarCaracteres(sigla: string, alvo: string): void {
     throw new EmissaoError(
       "SIGLA_INVALIDA",
       `A sigla "${sigla}" da ${alvo} precisa ser maiuscula, sem acento e sem ` +
-        "separador. Minuscula quebraria a unicidade: no SQLite, \"Tec\" e \"TEC\" " +
-        "sao valores distintos.",
+        'separador. Minuscula quebraria a unicidade: "Tec" e "TEC" sao valores ' +
+        "distintos para a constraint.",
     );
   }
 }
@@ -384,69 +391,23 @@ function mensagensEncadeadas(erro: unknown): string {
   return partes.join(" | ");
 }
 
+/**
+ * Violacao de unicidade. NUNCA vira retry - ver o comentario em `emitirLote`.
+ *
+ * Casa por tres caminhos porque o erro pode chegar em formatos diferentes: o Prisma
+ * classificado (P2002), o SQLSTATE cru do Postgres (23505) quando sobe pelo driver, e
+ * a mensagem em texto. Antes havia tambem deteccao de contencao (`ehBancoOcupado`,
+ * SQLITE_BUSY_SNAPSHOT); ela saiu junto com o SQLite, porque no Postgres a contencao
+ * do trio e resolvida esperando no advisory lock, nao falhando.
+ */
 export function ehViolacaoDeUnicidade(erro: unknown): boolean {
   if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === "P2002") {
     return true;
   }
-  return /unique constraint failed/i.test(mensagensEncadeadas(erro));
-}
 
-/**
- * Contencao de escrita: a transacao perdeu a disputa pelo lock e foi desfeita
- * INTEIRA. Retentar e seguro porque nada foi gravado e o MAX(sequencial) e relido do
- * zero na tentativa seguinte.
- *
- * Sobre o P1008: a especificacao previa que contencao chegasse como "database is
- * locked". Nesta stack ela nao chega. Medido contra o SQLite real, o Prisma 7 com
- * driver adapter devolve P1008 ("Operation has timed out") para a transacao perdedora,
- * em ~45ms, com busy_timeout 0, 1 ou 5000 igual - a string "database is locked" nunca
- * aparece. Casar so com a string deixaria o retry como codigo morto.
- *
- * O padrao de texto fica porque e o que aparece quando o erro sobe cru do SQLite,
- * fora do caminho do Prisma.
- */
-/**
- * Codigo de erro original do SQLite, quando o erro veio pelo driver adapter.
- *
- * O Prisma nao coloca isso na mensagem - fica em
- * `meta.driverAdapterError.cause.originalCode`. E o unico sinal preciso de contencao
- * que chega ate aqui.
- */
-function codigoOriginalDoSqlite(erro: unknown): string | undefined {
-  if (!(erro instanceof Prisma.PrismaClientKnownRequestError)) return undefined;
-
-  const meta = erro.meta as
-    | { driverAdapterError?: { cause?: { originalCode?: unknown } } }
-    | undefined;
-
-  const codigo = meta?.driverAdapterError?.cause?.originalCode;
-  return typeof codigo === "string" ? codigo : undefined;
-}
-
-export function ehBancoOcupado(erro: unknown): boolean {
-  // Unicidade nunca conta como contencao, mesmo se a mensagem citar lock.
-  if (ehViolacaoDeUnicidade(erro)) return false;
-
-  // O sinal e o codigo do SQLite, nao o P1008 do Prisma.
-  //
-  // Medido: sob contencao real entre conexoes, o Prisma 7 devolve P1008
-  // ("Operation has timed out") carregando originalCode SQLITE_BUSY_SNAPSHOT no meta.
-  // Esse erro e proprio do modo WAL - a transacao pegou um snapshot de leitura, outra
-  // commitou uma escrita depois, e escrever sobre snapshot velho e recusado na hora.
-  // O SQLite ignora o busy_timeout nesse caso de proposito: esperar nao resolveria,
-  // o snapshot ja esta obsoleto. Por isso falha em ~45ms com busy_timeout 0 ou 5000.
-  //
-  // Casar com P1008 puro seria largo demais: P1008 e o timeout generico do Prisma.
-  // Transacao lenta, por outro lado, da P2028 e corretamente NAO e retentada.
-  const original = codigoOriginalDoSqlite(erro);
-  if (original && /^SQLITE_(BUSY|LOCKED)/.test(original)) return true;
-
-  // Fallback para quando o erro sobe cru do SQLite, fora do caminho do Prisma.
-  return /database is locked|database table is locked|SQLITE_BUSY/i.test(
-    mensagensEncadeadas(erro),
-  );
-}
-
-function esperar(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const mensagem = mensagensEncadeadas(erro);
+  if (/\b23505\b|duplicate key value violates unique constraint/i.test(mensagem)) {
+    return true;
+  }
+  return /unique constraint failed/i.test(mensagem);
 }

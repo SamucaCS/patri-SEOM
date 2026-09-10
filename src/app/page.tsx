@@ -2,15 +2,15 @@ import { AvisosIntegridade } from "./_components/avisos-integridade";
 import { FormularioEmissao } from "./_components/formulario-emissao";
 import { verificarIntegridade } from "@/lib/boot";
 import { listarClassesAtivas, listarEscolasAtivas } from "@/lib/consultas";
-import { garantirWal } from "@/lib/prisma";
 import { anoCorrente } from "@/lib/config";
+import { exigirOperador } from "@/lib/sessao";
 
 // O sequencial depende do que já foi gravado: a tela nunca pode vir de cache.
 export const dynamic = "force-dynamic";
 
 export default async function PaginaEmissao() {
-  // WAL na inicialização, uma vez por processo.
-  await garantirWal();
+  // Vem primeiro e sozinho: sem sessão, nada de consultar o banco.
+  const operador = await exigirOperador();
 
   const [escolas, classes, problemas] = await Promise.all([
     listarEscolasAtivas(),
@@ -34,6 +34,7 @@ export default async function PaginaEmissao() {
         escolas={escolas}
         classes={classes}
         ano={anoCorrente()}
+        emitidoPor={operador.nome}
       />
     </div>
   );

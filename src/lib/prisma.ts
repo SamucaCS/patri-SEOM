@@ -1,50 +1,77 @@
 import { PrismaClient } from "@/generated/prisma/client";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 
 /**
- * busy_timeout do SQLite, em ms: quanto o driver espera por um lock antes de devolver
- * SQLITE_BUSY.
+ * Duas conexoes, de proposito.
  *
- * Vale para contencao vinda de FORA do Prisma - outro processo no arquivo, um
- * `prisma studio` aberto, a copia de backup. Medido, ele nao muda o comportamento de
- * duas transacoes concorrentes do proprio Prisma: nesse caso o perdedor volta com
- * P1008 em ~45ms, com busy_timeout 0, 1 ou 5000 igual. Ver o comentario de
- * `ehBancoOcupado` em emissao.ts.
+ * `DATABASE_URL` e o pooler do Supabase (porta 6543, `?pgbouncer=true`). Na Vercel cada
+ * invocacao serverless abriria uma conexao propria e o Postgres estouraria o limite; o
+ * pooler existe para absorver isso. Serve para leitura e escrita simples.
+ *
+ * `DIRECT_URL` e a conexao direta (porta 5432). A transacao interativa de emissao TEM
+ * que sair por aqui. Duas razoes, e as duas sao fatais:
+ *
+ *   1. Transacao interativa por pooler em transaction mode nao se sustenta: o pooler
+ *      devolve a conexao ao pool entre statements, entao BEGIN, o SELECT e o INSERT
+ *      podem cair em backends diferentes.
+ *   2. `pg_advisory_xact_lock` vive na transacao de UMA conexao. Se o statement seguinte
+ *      for para outro backend, o lock nao existe para ele - e a serializacao que o lock
+ *      deveria dar simplesmente nao acontece, sem erro nenhum.
+ *
+ * O item 2 e o perigoso: falha calada, e o sintoma e codigo de patrimonio duplicado.
  */
-const BUSY_TIMEOUT_MS = 5_000;
 
-/**
- * Cria um PrismaClient apontando para um arquivo SQLite.
- */
-export function criarPrismaClient(url?: string): PrismaClient {
-  const dbUrl = url ?? process.env.DATABASE_URL;
-  if (!dbUrl) {
+function exigir(nome: "DATABASE_URL" | "DIRECT_URL"): string {
+  const valor = process.env[nome];
+  if (!valor) {
     throw new Error(
-      "DATABASE_URL nao definida. Confira o .env (esperado: file:./prisma/emissor.db).",
+      `${nome} nao definida. Confira as variaveis de ambiente (.env local, ou o painel ` +
+        "da Vercel em producao). Ver INSTALL.md.",
     );
   }
+  return valor;
+}
 
-  const adapter = new PrismaBetterSqlite3({ url: dbUrl, timeout: BUSY_TIMEOUT_MS });
+/**
+ * Client apontado para uma URL especifica.
+ *
+ * `schema` existe para os testes: cada arquivo de teste roda no seu proprio schema do
+ * Postgres, para nao disputar as mesmas tabelas com os outros. Em producao fica no
+ * default (`public`).
+ */
+export function criarPrismaClient(url?: string, schema?: string): PrismaClient {
+  const adapter = new PrismaPg(
+    { connectionString: url ?? exigir("DATABASE_URL") },
+    schema ? { schema } : undefined,
+  );
   return new PrismaClient({ adapter });
 }
 
 /**
- * WAL permite leitura concorrente com escrita e reduz muito a janela de lock.
- * E persistente no arquivo, mas reaplicar na inicializacao e barato e garante que um
- * banco restaurado de backup entre no modo certo.
+ * Client da conexao DIRETA, exclusivo da emissao.
+ *
+ * Nao reaproveita `criarPrismaClient` para que a escolha da URL fique explicita: quem
+ * ler esta funcao precisa ver que ela ignora o pooler de proposito.
  */
-export async function ativarWal(client: PrismaClient): Promise<void> {
-  await client.$queryRawUnsafe("PRAGMA journal_mode = WAL;");
-  await client.$queryRawUnsafe("PRAGMA foreign_keys = ON;");
+export function criarPrismaClientDireto(url?: string, schema?: string): PrismaClient {
+  const adapter = new PrismaPg(
+    { connectionString: url ?? exigir("DIRECT_URL") },
+    schema ? { schema } : undefined,
+  );
+  return new PrismaClient({ adapter });
 }
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
+  prismaDireto?: PrismaClient;
 };
 
 /**
- * Singleton preguicoso. Nao e criado no import: assim importar a logica de emissao
- * nao abre conexao com o banco de desenvolvimento (os testes dependem disso).
+ * Singleton preguicoso do client do pooler.
+ *
+ * Nao e criado no import: assim importar a logica de emissao nao abre conexao com o
+ * banco (os testes dependem disso). Em dev o Next recarrega o modulo a cada edicao, e
+ * guardar no globalThis evita abrir uma conexao nova por recarga.
  */
 export function getPrisma(): PrismaClient {
   if (!globalForPrisma.prisma) {
@@ -53,21 +80,10 @@ export function getPrisma(): PrismaClient {
   return globalForPrisma.prisma;
 }
 
-let walPendente: Promise<void> | null = null;
-
-/**
- * Aplica o WAL uma vez por processo.
- *
- * Guarda a promessa, e nao um booleano: dois pedidos simultaneos na subida do
- * servidor pegariam o booleano ainda falso e mandariam o PRAGMA duas vezes.
- */
-export function garantirWal(client?: PrismaClient): Promise<void> {
-  if (!walPendente) {
-    walPendente = ativarWal(client ?? getPrisma()).catch((erro) => {
-      // Nao derruba a aplicacao: o banco funciona sem WAL, so com mais contencao.
-      console.error("[prisma] Nao foi possivel ativar o WAL.", erro);
-      walPendente = null;
-    });
+/** Singleton preguicoso do client direto. So a emissao usa. */
+export function getPrismaDireto(): PrismaClient {
+  if (!globalForPrisma.prismaDireto) {
+    globalForPrisma.prismaDireto = criarPrismaClientDireto();
   }
-  return walPendente;
+  return globalForPrisma.prismaDireto;
 }

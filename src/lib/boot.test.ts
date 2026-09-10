@@ -12,8 +12,8 @@ import { emitirLote } from "./emissao";
 let banco: BancoDeTeste;
 let prisma: PrismaClient;
 
-beforeEach(() => {
-  banco = criarBancoDeTeste();
+beforeEach(async () => {
+  banco = await criarBancoDeTeste();
   prisma = banco.prisma;
 });
 

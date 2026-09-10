@@ -17,7 +17,7 @@ let escolaId: string;
 let classeId: string;
 
 beforeEach(async () => {
-  banco = criarBancoDeTeste();
+  banco = await criarBancoDeTeste();
   prisma = banco.prisma;
 
   const escola = await criarEscola(prisma, "BR", "Batista Renzi");

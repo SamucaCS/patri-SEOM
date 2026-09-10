@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { CLASSES, ESCOLAS } from "./escolas";
 
 /**
@@ -16,14 +16,14 @@ import { CLASSES, ESCOLAS } from "./escolas";
  */
 
 async function main() {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL nao definida.");
+  // Seed escreve muito e roda local: conexao direta, nunca o pooler.
+  const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+  if (!url) throw new Error("DIRECT_URL (ou DATABASE_URL) nao definida.");
 
   const prisma = new PrismaClient({
-    adapter: new PrismaBetterSqlite3({ url, timeout: 5000 }),
+    adapter: new PrismaPg({ connectionString: url }),
   });
 
-  await prisma.$queryRawUnsafe("PRAGMA journal_mode = WAL;");
 
   // Trava: o upsert de classe é chaveado pela SIGLA, então trocar a sigla de uma
   // classe em escolas.ts não renomeia nada - cria uma classe nova e deixa a antiga

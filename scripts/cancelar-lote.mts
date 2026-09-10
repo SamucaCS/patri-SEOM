@@ -2,7 +2,7 @@ import "dotenv/config";
 import { appendFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { FUSO_URE } from "../src/lib/config";
-import { criarPrismaClient, garantirWal } from "../src/lib/prisma";
+import { criarPrismaClientDireto } from "../src/lib/prisma";
 
 /**
  * Cancelamento de lote pela linha de comando.
@@ -51,8 +51,9 @@ if (!por || !por.trim()) {
   encerrar('Informe quem está cancelando: --por "Nome". Isso vai para o log.');
 }
 
-const prisma = criarPrismaClient();
-await garantirWal(prisma);
+// Roda local contra o banco remoto. Conexao direta: o pooler existe para absorver
+// conexao de serverless, e este script e um processo unico e de vida curta.
+const prisma = criarPrismaClientDireto();
 
 const lote = await prisma.lote.findUnique({
   where: { id: loteId },

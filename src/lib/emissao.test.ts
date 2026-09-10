@@ -19,7 +19,6 @@ import {
 } from "./config";
 import {
   EmissaoError,
-  ehBancoOcupado,
   ehViolacaoDeUnicidade,
   emitirLote,
   limparTexto,
@@ -37,7 +36,7 @@ let classeMobiId: string;
 let classeLbId: string;
 
 beforeEach(async () => {
-  banco = criarBancoDeTeste();
+  banco = await criarBancoDeTeste();
   prisma = banco.prisma;
 
   const escola = await criarEscola(prisma, "BR", "Batista Renzi");
@@ -230,7 +229,7 @@ describe("3. codigo nunca e reaproveitado", () => {
   });
 });
 
-describe("4. concorrencia (SQLite real, sem mock)", () => {
+describe("4. concorrencia (Postgres real, sem mock)", () => {
   it("duas emissoes simultaneas no mesmo trio geram sequenciais contiguos e sem sobreposicao", async () => {
     const QUANTIDADE = 25;
 
@@ -425,77 +424,52 @@ describe("5. teto de 99.999 por ano", () => {
   });
 });
 
-describe("retry: contencao sim, bug de logica nao", () => {
-  it("reconhece 'database is locked' como contencao", () => {
-    expect(ehBancoOcupado(new Error("database is locked"))).toBe(true);
-    expect(ehBancoOcupado(new Error("SQLITE_BUSY: database is locked"))).toBe(true);
-    // Mensagem real chega aninhada no `cause`.
-    expect(
-      ehBancoOcupado(
-        new Error("Invalid prisma.codigo.createMany() invocation", {
-          cause: new Error("database is locked"),
-        }),
-      ),
-    ).toBe(true);
-  });
+describe("unicidade nunca vira retry, e o lock e que serializa", () => {
+  // O que estes testes cuidam mudou de banco, mas a garantia e a mesma: violacao de
+  // unicidade e BUG DE LOGICA e tem que aparecer, nunca ser mascarada por nova
+  // tentativa. No SQLite havia tambem `ehBancoOcupado`, que reconhecia
+  // SQLITE_BUSY_SNAPSHOT para retentar contencao. No Postgres isso nao existe: o
+  // advisory lock ESPERA em vez de falhar, entao nao ha contencao para retentar - e a
+  // funcao foi removida junto com o SQLite.
 
-  it("NAO trata violacao de unicidade como contencao (nunca retenta)", () => {
-    const violacao = new Error("UNIQUE constraint failed: Codigo.sequencial");
-    expect(ehViolacaoDeUnicidade(violacao)).toBe(true);
-    expect(ehBancoOcupado(violacao)).toBe(false);
-
-    // Nem quando a mensagem cita lock junto: unicidade vence e nao retenta.
-    const misto = new Error(
-      "UNIQUE constraint failed: Codigo.sequencial (database is locked)",
-    );
-    expect(ehBancoOcupado(misto)).toBe(false);
-  });
-
-  it("erro de regra de negocio nao e confundido com contencao", () => {
-    const erro = new EmissaoError("TETO_EXCEDIDO", "estourou");
-    expect(ehBancoOcupado(erro)).toBe(false);
-    expect(ehViolacaoDeUnicidade(erro)).toBe(false);
-  });
-
-  it("trata contencao pelo codigo do SQLite, nao pelo P1008", () => {
-    // Forma exata medida contra o SQLite real sob contencao entre conexoes.
-    const contencao = new Prisma.PrismaClientKnownRequestError(
-      "Operation has timed out",
-      {
-        code: "P1008",
-        clientVersion: "7.10.0",
-        meta: {
-          modelName: "Lote",
-          driverAdapterError: {
-            name: "DriverAdapterError",
-            cause: {
-              originalCode: "SQLITE_BUSY_SNAPSHOT",
-              originalMessage: "database is locked",
-              kind: "SocketTimeout",
-            },
-          },
-        },
-      },
+  it("reconhece a violacao tipada do Prisma (P2002)", () => {
+    const p2002 = new Prisma.PrismaClientKnownRequestError(
+      "Unique constraint failed on the fields: (`escolaId`,`classeId`,`ano`,`sequencial`)",
+      { code: "P2002", clientVersion: "7.10.0" },
     );
 
-    expect(ehBancoOcupado(contencao)).toBe(true);
-    expect(ehViolacaoDeUnicidade(contencao)).toBe(false);
+    expect(ehViolacaoDeUnicidade(p2002)).toBe(true);
   });
 
-  it("P1008 SEM sinal de lock do SQLite NAO e retentado", () => {
-    // P1008 e o timeout generico do Prisma. Retentar em cima dele varreria qualquer
-    // operacao lenta para dentro do retry - exatamente o que nao se quer sob carga.
-    const generico = new Prisma.PrismaClientKnownRequestError(
-      "Operation has timed out",
-      { code: "P1008", clientVersion: "7.10.0", meta: { modelName: "Lote" } },
+  it("reconhece o SQLSTATE cru do Postgres (23505)", () => {
+    // Forma que chega quando o erro sobe pelo driver sem o Prisma classificar.
+    const cru = new Error(
+      'duplicate key value violates unique constraint "Codigo_escolaId_classeId_ano_sequencial_key"',
     );
+    expect(ehViolacaoDeUnicidade(cru)).toBe(true);
 
-    expect(ehBancoOcupado(generico)).toBe(false);
+    const porCodigo = new Error("error: 23505: chave duplicada");
+    expect(ehViolacaoDeUnicidade(porCodigo)).toBe(true);
   });
 
-  it("transacao expirada (P2028) NAO e retentada", () => {
-    // Medido: transacao que passa do `timeout` da $transaction da P2028, nao P1008.
-    // Trabalho lento dentro da transacao e problema de modelagem, nao contencao.
+  it("acha a violacao aninhada no cause", () => {
+    const aninhado = new Error("Invalid prisma.codigo.createMany() invocation", {
+      cause: new Error("duplicate key value violates unique constraint"),
+    });
+    expect(ehViolacaoDeUnicidade(aninhado)).toBe(true);
+  });
+
+  it("erro de regra de negocio nao e confundido com violacao de unicidade", () => {
+    expect(ehViolacaoDeUnicidade(new EmissaoError("TETO_EXCEDIDO", "estourou"))).toBe(
+      false,
+    );
+    expect(ehViolacaoDeUnicidade(new Error("connection refused"))).toBe(false);
+    expect(ehViolacaoDeUnicidade(undefined)).toBe(false);
+  });
+
+  it("timeout de transacao (P2028) NAO conta como unicidade", () => {
+    // Transacao lenta e problema de modelagem, nao colisao de sequencial. Se isso
+    // fosse tratado como unicidade, o operador veria "reporte ao suporte" por lentidao.
     const expirada = new Prisma.PrismaClientKnownRequestError(
       "Transaction API error: A query cannot be executed on an expired transaction.",
       {
@@ -505,32 +479,55 @@ describe("retry: contencao sim, bug de logica nao", () => {
       },
     );
 
-    expect(ehBancoOcupado(expirada)).toBe(false);
+    expect(ehViolacaoDeUnicidade(expirada)).toBe(false);
   });
 
-  it("SQLITE_LOCKED tambem conta como contencao", () => {
-    const locked = new Prisma.PrismaClientKnownRequestError("Operation has timed out", {
-      code: "P1008",
-      clientVersion: "7.10.0",
-      meta: {
-        driverAdapterError: {
-          cause: { originalCode: "SQLITE_LOCKED", originalMessage: "database table is locked" },
-        },
+  it("o advisory lock e realmente tomado pela transacao de emissao", async () => {
+    // Prova direta, contra o Postgres real: enquanto uma emissao esta em curso, a
+    // chave do trio aparece em pg_locks como advisory. Se este teste falhar, o lock
+    // nao esta sendo pego - e o teste de concorrencia perde o sentido.
+    const chave = `${escolaId}:${classeTecId}:${ANO}`;
+
+    const [{ hash }] = await prisma.$queryRaw<Array<{ hash: number }>>`
+      SELECT hashtext(${chave})::bigint AS hash
+    `;
+
+    let travadosDurante = 0;
+    let liberar!: () => void;
+    const porta = new Promise<void>((r) => (liberar = r));
+
+    const conexaoB = banco.novaConexao();
+
+    // Segura uma transacao que pegou o MESMO lock, e olha pg_locks de fora.
+    const emCurso = conexaoB.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${chave})::bigint)`;
+        await porta;
       },
-    });
-
-    expect(ehBancoOcupado(locked)).toBe(true);
-  });
-
-  it("P2002 NUNCA e retentado, mesmo vindo do Prisma tipado", () => {
-    const p2002 = new Prisma.PrismaClientKnownRequestError(
-      "Unique constraint failed on the fields: (`escolaId`,`classeId`,`ano`,`sequencial`)",
-      { code: "P2002", clientVersion: "7.10.0" },
+      { maxWait: 10_000, timeout: 30_000 },
     );
 
-    expect(ehViolacaoDeUnicidade(p2002)).toBe(true);
-    // A garantia central: violacao de unicidade jamais entra no caminho de retry.
-    expect(ehBancoOcupado(p2002)).toBe(false);
+    // Espera o lock aparecer, sem depender de tempo fixo.
+    for (let i = 0; i < 50 && travadosDurante === 0; i++) {
+      const r = await prisma.$queryRaw<Array<{ n: bigint }>>`
+        SELECT count(*) AS n FROM pg_locks
+        WHERE locktype = 'advisory' AND ((classid::bigint << 32) | objid::bigint) = ${hash}
+      `;
+      travadosDurante = Number(r[0]?.n ?? 0);
+      if (travadosDurante === 0) await new Promise((r2) => setTimeout(r2, 20));
+    }
+
+    liberar();
+    await emCurso;
+
+    expect(travadosDurante).toBeGreaterThan(0);
+
+    // E depois do commit, o lock some sozinho: e `_xact_`, nao precisa de unlock.
+    const depois = await prisma.$queryRaw<Array<{ n: bigint }>>`
+      SELECT count(*) AS n FROM pg_locks
+      WHERE locktype = 'advisory' AND ((classid::bigint << 32) | objid::bigint) = ${hash}
+    `;
+    expect(Number(depois[0]?.n ?? 0)).toBe(0);
   });
 
   it("o indice unico recusa sequencial repetido dentro do mesmo ano", async () => {

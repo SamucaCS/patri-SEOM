@@ -6,6 +6,7 @@ import {
   TAMANHO_PAGINA,
   type FiltrosCodigo,
 } from "@/lib/consultas";
+import { exigirOperador } from "@/lib/sessao";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,9 @@ export default async function PaginaConsulta({
 }: {
   searchParams: Promise<Busca>;
 }) {
+  // Antes de tudo: a consulta mostra a base inteira, com nome de escola e CIE.
+  await exigirOperador();
+
   const busca = await searchParams;
 
   const filtros: FiltrosCodigo = {
