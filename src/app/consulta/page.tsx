@@ -149,7 +149,7 @@ export default async function PaginaConsulta({
             name="codigo"
             type="text"
             defaultValue={filtros.codigo ?? ""}
-            placeholder="Trecho do código, ex.: BRA-2026"
+            placeholder="Trecho do código, ex.: SUZ-BR2026"
             className="codigo mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
           />
         </div>
