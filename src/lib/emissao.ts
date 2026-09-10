@@ -360,14 +360,43 @@ export function ehViolacaoDeUnicidade(erro: unknown): boolean {
  * O padrao de texto fica porque e o que aparece quando o erro sobe cru do SQLite,
  * fora do caminho do Prisma.
  */
+/**
+ * Codigo de erro original do SQLite, quando o erro veio pelo driver adapter.
+ *
+ * O Prisma nao coloca isso na mensagem - fica em
+ * `meta.driverAdapterError.cause.originalCode`. E o unico sinal preciso de contencao
+ * que chega ate aqui.
+ */
+function codigoOriginalDoSqlite(erro: unknown): string | undefined {
+  if (!(erro instanceof Prisma.PrismaClientKnownRequestError)) return undefined;
+
+  const meta = erro.meta as
+    | { driverAdapterError?: { cause?: { originalCode?: unknown } } }
+    | undefined;
+
+  const codigo = meta?.driverAdapterError?.cause?.originalCode;
+  return typeof codigo === "string" ? codigo : undefined;
+}
+
 export function ehBancoOcupado(erro: unknown): boolean {
   // Unicidade nunca conta como contencao, mesmo se a mensagem citar lock.
   if (ehViolacaoDeUnicidade(erro)) return false;
 
-  if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === "P1008") {
-    return true;
-  }
+  // O sinal e o codigo do SQLite, nao o P1008 do Prisma.
+  //
+  // Medido: sob contencao real entre conexoes, o Prisma 7 devolve P1008
+  // ("Operation has timed out") carregando originalCode SQLITE_BUSY_SNAPSHOT no meta.
+  // Esse erro e proprio do modo WAL - a transacao pegou um snapshot de leitura, outra
+  // commitou uma escrita depois, e escrever sobre snapshot velho e recusado na hora.
+  // O SQLite ignora o busy_timeout nesse caso de proposito: esperar nao resolveria,
+  // o snapshot ja esta obsoleto. Por isso falha em ~45ms com busy_timeout 0 ou 5000.
+  //
+  // Casar com P1008 puro seria largo demais: P1008 e o timeout generico do Prisma.
+  // Transacao lenta, por outro lado, da P2028 e corretamente NAO e retentada.
+  const original = codigoOriginalDoSqlite(erro);
+  if (original && /^SQLITE_(BUSY|LOCKED)/.test(original)) return true;
 
+  // Fallback para quando o erro sobe cru do SQLite, fora do caminho do Prisma.
   return /database is locked|database table is locked|SQLITE_BUSY/i.test(
     mensagensEncadeadas(erro),
   );

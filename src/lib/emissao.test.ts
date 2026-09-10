@@ -451,14 +451,69 @@ describe("retry: contencao sim, bug de logica nao", () => {
     expect(ehViolacaoDeUnicidade(erro)).toBe(false);
   });
 
-  it("trata P1008 como contencao (e o que o Prisma 7 realmente emite aqui)", () => {
-    const p1008 = new Prisma.PrismaClientKnownRequestError("Operation has timed out", {
+  it("trata contencao pelo codigo do SQLite, nao pelo P1008", () => {
+    // Forma exata medida contra o SQLite real sob contencao entre conexoes.
+    const contencao = new Prisma.PrismaClientKnownRequestError(
+      "Operation has timed out",
+      {
+        code: "P1008",
+        clientVersion: "7.10.0",
+        meta: {
+          modelName: "Lote",
+          driverAdapterError: {
+            name: "DriverAdapterError",
+            cause: {
+              originalCode: "SQLITE_BUSY_SNAPSHOT",
+              originalMessage: "database is locked",
+              kind: "SocketTimeout",
+            },
+          },
+        },
+      },
+    );
+
+    expect(ehBancoOcupado(contencao)).toBe(true);
+    expect(ehViolacaoDeUnicidade(contencao)).toBe(false);
+  });
+
+  it("P1008 SEM sinal de lock do SQLite NAO e retentado", () => {
+    // P1008 e o timeout generico do Prisma. Retentar em cima dele varreria qualquer
+    // operacao lenta para dentro do retry - exatamente o que nao se quer sob carga.
+    const generico = new Prisma.PrismaClientKnownRequestError(
+      "Operation has timed out",
+      { code: "P1008", clientVersion: "7.10.0", meta: { modelName: "Lote" } },
+    );
+
+    expect(ehBancoOcupado(generico)).toBe(false);
+  });
+
+  it("transacao expirada (P2028) NAO e retentada", () => {
+    // Medido: transacao que passa do `timeout` da $transaction da P2028, nao P1008.
+    // Trabalho lento dentro da transacao e problema de modelagem, nao contencao.
+    const expirada = new Prisma.PrismaClientKnownRequestError(
+      "Transaction API error: A query cannot be executed on an expired transaction.",
+      {
+        code: "P2028",
+        clientVersion: "7.10.0",
+        meta: { modelName: "Escola", timeout: 2000, timeTaken: 3014 },
+      },
+    );
+
+    expect(ehBancoOcupado(expirada)).toBe(false);
+  });
+
+  it("SQLITE_LOCKED tambem conta como contencao", () => {
+    const locked = new Prisma.PrismaClientKnownRequestError("Operation has timed out", {
       code: "P1008",
       clientVersion: "7.10.0",
+      meta: {
+        driverAdapterError: {
+          cause: { originalCode: "SQLITE_LOCKED", originalMessage: "database table is locked" },
+        },
+      },
     });
 
-    expect(ehBancoOcupado(p1008)).toBe(true);
-    expect(ehViolacaoDeUnicidade(p1008)).toBe(false);
+    expect(ehBancoOcupado(locked)).toBe(true);
   });
 
   it("P2002 NUNCA e retentado, mesmo vindo do Prisma tipado", () => {
