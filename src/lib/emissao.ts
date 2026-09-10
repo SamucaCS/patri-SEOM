@@ -2,14 +2,14 @@ import { Prisma, type Lote, type PrismaClient } from "@/generated/prisma/client"
 import {
   ANO_DIGITS,
   LOTE_MAX,
-  SEPARADOR_CLASSE,
-  SEPARADOR_ESCOLA,
-  SEQUENCIAL_DIGITS,
   SEQUENCIAL_MAX,
   SIGLA_CLASSE_MAX_LENGTH,
   SIGLA_CLASSE_MIN_LENGTH,
   SIGLA_ESCOLA_LENGTH,
+  montarCodigo,
 } from "./config";
+
+export { montarCodigo };
 import { getPrisma } from "./prisma";
 
 export type EmitirLoteInput = {
@@ -64,26 +64,12 @@ export class EmissaoError extends Error {
 const MAX_TENTATIVAS = 3;
 const BACKOFF_BASE_MS = 25;
 
-/**
- * Monta o codigo no formato [ESCOLA]-[ANO][SEQUENCIAL]-[CLASSE].
- *
- *   montarCodigo("BRA", 2026, 1, "MOBI") -> "BRA-202600001-MOBI"
- */
-export function montarCodigo(
-  siglaEscola: string,
-  ano: number,
-  sequencial: number,
-  siglaClasse: string,
-): string {
-  const seq = String(sequencial).padStart(SEQUENCIAL_DIGITS, "0");
-  return `${siglaEscola}${SEPARADOR_ESCOLA}${ano}${seq}${SEPARADOR_CLASSE}${siglaClasse}`;
-}
 
 /**
  * Emite um lote de codigos para um trio (escola, classe, ano).
  *
  * O sequencial reinicia em 1 a cada ano. Isso nao reaproveita codigo: o ano faz parte
- * do codigo, entao BRA-202600001-TEC e BRA-202700001-TEC sao codigos diferentes.
+ * do codigo, entao SUZ-BR20260001-TEC e SUZ-BR20270001-TEC sao codigos diferentes.
  */
 export async function emitirLote(
   input: EmitirLoteInput,
@@ -185,7 +171,7 @@ async function emitirLoteUmaVez(
       });
       const ultimo = agregado._max.sequencial ?? 0;
 
-      // 2. Teto de 99.999 por trio.
+      // 2. Teto por trio (escola, classe, ano).
       if (ultimo + input.quantidade > SEQUENCIAL_MAX) {
         const restante = Math.max(0, SEQUENCIAL_MAX - ultimo);
         throw new EmissaoError(

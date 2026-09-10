@@ -10,15 +10,17 @@ import {
   ANO_DIGITS,
   CODIGO_REGEX,
   LOTE_MAX,
+  POSICAO_ANO,
+  POSICAO_SEQUENCIAL,
   SEQUENCIAL_DIGITS,
   SEQUENCIAL_MAX,
-  SIGLA_ESCOLA_LENGTH,
 } from "./config";
 import {
   EmissaoError,
   ehBancoOcupado,
   ehViolacaoDeUnicidade,
   emitirLote,
+  montarCodigo,
 } from "./emissao";
 
 /** Ano fixo: os testes nao podem depender de quando forem rodados. */
@@ -35,7 +37,7 @@ beforeEach(async () => {
   banco = criarBancoDeTeste();
   prisma = banco.prisma;
 
-  const escola = await criarEscola(prisma, "BRA", "Batista Renzi");
+  const escola = await criarEscola(prisma, "BR", "Batista Renzi");
   const tec = await criarClasse(prisma, "TEC", "Tecnologia");
   const mobi = await criarClasse(prisma, "MOBI", "Mobiliario");
   const lb = await criarClasse(prisma, "LB", "Linha branca");
@@ -61,26 +63,25 @@ function entrada(overrides: Partial<Parameters<typeof emitirLote>[0]> = {}) {
   };
 }
 
-/** Extrai o sequencial de BRA-202600001-TEC pelas posicoes fixas do formato. */
-const INICIO_ANO = SIGLA_ESCOLA_LENGTH + 1;
-const INICIO_SEQ = INICIO_ANO + ANO_DIGITS;
-const FIM_SEQ = INICIO_SEQ + SEQUENCIAL_DIGITS;
-
+/**
+ * Extrai o sequencial de SUZ-BR20260001-TEC por posicao fixa.
+ * As posicoes vem do config: o prefixo entra na conta.
+ */
 function sequencialDe(codigo: string): number {
-  return Number(codigo.slice(INICIO_SEQ, FIM_SEQ));
+  return Number(codigo.slice(POSICAO_SEQUENCIAL, POSICAO_SEQUENCIAL + SEQUENCIAL_DIGITS));
 }
 
 describe("1. formato do codigo", () => {
-  it("bate com o formato ESCOLA-ANOSEQUENCIAL-CLASSE", async () => {
+  it("bate com o formato SUZ-ESCOLA+ANO+SEQUENCIAL-CLASSE", async () => {
     const { codigos } = await emitirLote(entrada({ quantidade: 3 }), {
       client: prisma,
       ano: ANO,
     });
 
     expect(codigos).toEqual([
-      "BRA-202600001-TEC",
-      "BRA-202600002-TEC",
-      "BRA-202600003-TEC",
+      "SUZ-BR20260001-TEC",
+      "SUZ-BR20260002-TEC",
+      "SUZ-BR20260003-TEC",
     ]);
 
     for (const codigo of codigos) {
@@ -105,9 +106,9 @@ describe("1. formato do codigo", () => {
       ano: ANO,
     });
 
-    expect(lb.codigos).toEqual(["BRA-202600001-LB"]);
-    expect(tec.codigos).toEqual(["BRA-202600001-TEC"]);
-    expect(mobi.codigos).toEqual(["BRA-202600001-MOBI"]);
+    expect(lb.codigos).toEqual(["SUZ-BR20260001-LB"]);
+    expect(tec.codigos).toEqual(["SUZ-BR20260001-TEC"]);
+    expect(mobi.codigos).toEqual(["SUZ-BR20260001-MOBI"]);
 
     for (const codigo of [...lb.codigos, ...tec.codigos, ...mobi.codigos]) {
       expect(codigo).toMatch(CODIGO_REGEX);
@@ -116,12 +117,14 @@ describe("1. formato do codigo", () => {
 
   it("carrega o ano da emissao e zera o sequencial a esquerda", async () => {
     const { codigos } = await emitirLote(entrada(), { client: prisma, ano: 2031 });
-    expect(codigos).toEqual(["BRA-203100001-TEC"]);
+    expect(codigos).toEqual(["SUZ-BR20310001-TEC"]);
   });
 
   it("usa o ano corrente quando nenhum ano e informado", async () => {
     const { codigos } = await emitirLote(entrada(), { client: prisma });
-    expect(codigos[0]).toContain(`-${new Date().getFullYear()}`);
+    const anoNoCodigo = codigos[0].slice(POSICAO_ANO, POSICAO_ANO + ANO_DIGITS);
+
+    expect(Number(anoNoCodigo)).toBe(new Date().getFullYear());
     expect(codigos[0]).toMatch(CODIGO_REGEX);
   });
 });
@@ -136,14 +139,14 @@ describe("2. isolamento por classe", () => {
     );
 
     // MOBI comeca do 1 mesmo com 7 codigos TEC ja emitidos.
-    expect(codigos).toEqual(["BRA-202600001-MOBI", "BRA-202600002-MOBI"]);
+    expect(codigos).toEqual(["SUZ-BR20260001-MOBI", "SUZ-BR20260002-MOBI"]);
 
     const tecDepois = await emitirLote(entrada(), { client: prisma, ano: ANO });
-    expect(tecDepois.codigos).toEqual(["BRA-202600008-TEC"]);
+    expect(tecDepois.codigos).toEqual(["SUZ-BR20260008-TEC"]);
   });
 
   it("escolas diferentes tem contadores independentes", async () => {
-    const outra = await criarEscola(prisma, "ARL", "Alfredo Roberto");
+    const outra = await criarEscola(prisma, "AR", "Alfredo Roberto");
 
     await emitirLote(entrada({ quantidade: 4 }), { client: prisma, ano: ANO });
     const { codigos } = await emitirLote(entrada({ escolaId: outra.id }), {
@@ -151,7 +154,7 @@ describe("2. isolamento por classe", () => {
       ano: ANO,
     });
 
-    expect(codigos).toEqual(["ARL-202600001-TEC"]);
+    expect(codigos).toEqual(["SUZ-AR20260001-TEC"]);
   });
 });
 
@@ -167,7 +170,7 @@ describe("2b. reinicio anual do sequencial", () => {
       client: prisma,
       ano: 2027,
     });
-    expect(em2027.codigos).toEqual(["BRA-202700001-TEC", "BRA-202700002-TEC"]);
+    expect(em2027.codigos).toEqual(["SUZ-BR20270001-TEC", "SUZ-BR20270002-TEC"]);
   });
 
   it("emitir em 2027 nao mexe no contador de 2026", async () => {
@@ -175,7 +178,7 @@ describe("2b. reinicio anual do sequencial", () => {
     await emitirLote(entrada({ quantidade: 5 }), { client: prisma, ano: 2027 });
 
     const voltaPara2026 = await emitirLote(entrada(), { client: prisma, ano: 2026 });
-    expect(voltaPara2026.codigos).toEqual(["BRA-202600004-TEC"]);
+    expect(voltaPara2026.codigos).toEqual(["SUZ-BR20260004-TEC"]);
   });
 
   it("reiniciar o sequencial nao reaproveita codigo: o ano diferencia", async () => {
@@ -198,18 +201,18 @@ describe("3. codigo nunca e reaproveitado", () => {
       client: prisma,
       ano: ANO,
     });
-    expect(primeiro.codigos).toEqual(["BRA-202600001-TEC", "BRA-202600002-TEC"]);
+    expect(primeiro.codigos).toEqual(["SUZ-BR20260001-TEC", "SUZ-BR20260002-TEC"]);
 
     // Cancelamento e so marcacao: o numero morre ocupado.
     await prisma.codigo.update({
-      where: { codigo: "BRA-202600002-TEC" },
+      where: { codigo: "SUZ-BR20260002-TEC" },
       data: { cancelado: true },
     });
 
     const segundo = await emitirLote(entrada(), { client: prisma, ano: ANO });
 
-    expect(segundo.codigos).toEqual(["BRA-202600003-TEC"]);
-    expect(segundo.codigos).not.toContain("BRA-202600002-TEC");
+    expect(segundo.codigos).toEqual(["SUZ-BR20260003-TEC"]);
+    expect(segundo.codigos).not.toContain("SUZ-BR20260002-TEC");
   });
 
   it("cancelar o ultimo codigo tambem nao faz o contador retroceder", async () => {
@@ -220,7 +223,7 @@ describe("3. codigo nunca e reaproveitado", () => {
     });
 
     const depois = await emitirLote(entrada(), { client: prisma, ano: ANO });
-    expect(depois.codigos).toEqual(["BRA-202600004-TEC"]);
+    expect(depois.codigos).toEqual(["SUZ-BR20260004-TEC"]);
   });
 });
 
@@ -349,7 +352,7 @@ describe("5. teto de 99.999 por ano", () => {
     });
     await prisma.codigo.create({
       data: {
-        codigo: `BRA-${ano}${String(valor).padStart(SEQUENCIAL_DIGITS, "0")}-TEC`,
+        codigo: montarCodigo("BR", ano, valor, "TEC"),
         escolaId,
         classeId: classeTecId,
         ano,
@@ -387,7 +390,7 @@ describe("5. teto de 99.999 por ano", () => {
       client: prisma,
       ano: ANO,
     });
-    expect(codigos).toEqual(["BRA-202699998-TEC", "BRA-202699999-TEC"]);
+    expect(codigos).toEqual(["SUZ-BR20269998-TEC", "SUZ-BR20269999-TEC"]);
 
     // E o proximo ja estoura.
     await expect(
@@ -415,7 +418,7 @@ describe("5. teto de 99.999 por ano", () => {
     ).rejects.toMatchObject({ codigo: "TETO_EXCEDIDO" });
 
     const em2027 = await emitirLote(entrada(), { client: prisma, ano: 2027 });
-    expect(em2027.codigos).toEqual(["BRA-202700001-TEC"]);
+    expect(em2027.codigos).toEqual(["SUZ-BR20270001-TEC"]);
   });
 });
 
@@ -540,7 +543,7 @@ describe("retry: contencao sim, bug de logica nao", () => {
     });
     await prisma.codigo.create({
       data: {
-        codigo: "BRA-202600001-OUTRO",
+        codigo: "SUZ-BR20260001-OUTRO",
         escolaId,
         classeId: classeTecId,
         ano: ANO,
@@ -552,7 +555,7 @@ describe("retry: contencao sim, bug de logica nao", () => {
     await expect(
       prisma.codigo.create({
         data: {
-          codigo: "BRA-202600001-TEC",
+          codigo: "SUZ-BR20260001-TEC",
           escolaId,
           classeId: classeTecId,
           ano: ANO,
@@ -576,7 +579,7 @@ describe("retry: contencao sim, bug de logica nao", () => {
     });
     await prisma.codigo.create({
       data: {
-        codigo: "BRA-202600001-TEC",
+        codigo: "SUZ-BR20260001-TEC",
         escolaId,
         classeId: classeTecId,
         ano: 2026,
@@ -587,7 +590,7 @@ describe("retry: contencao sim, bug de logica nao", () => {
 
     const outroAno = await prisma.codigo.create({
       data: {
-        codigo: "BRA-202700001-TEC",
+        codigo: "SUZ-BR20270001-TEC",
         escolaId,
         classeId: classeTecId,
         ano: 2027,
@@ -638,7 +641,7 @@ describe("validacao de entrada", () => {
     // A sigla de escola abre o codigo: comprimento misto quebraria o parsing.
     // Entra pelo banco, mas a emissao trava antes de gravar qualquer coisa.
     const torta = await prisma.escola.create({
-      data: { sigla: "XY", nome: "Sigla de 2", codigoCie: "CIE-XY" },
+      data: { sigla: "XYZ", nome: "Sigla de 3", codigoCie: "CIE-XYZ" },
     });
 
     await expect(

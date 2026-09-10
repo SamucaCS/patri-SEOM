@@ -6,12 +6,13 @@ import { CLASSES, ESCOLAS } from "./escolas";
 /**
  * Seed com a lista real da URE Suzano.
  *
- * Idempotente: roda por upsert com a sigla como chave, entao rodar de novo nao
- * duplica nada e nao mexe em codigo ja emitido.
+ * A chave do upsert de escola é o codigoCie, não a sigla. O CIE é o identificador
+ * oficial da unidade e não muda; a sigla é invenção nossa e pode ser revisada antes
+ * da primeira emissão. Chavear pela sigla faria uma revisão de sigla criar uma
+ * unidade nova em vez de atualizar a existente.
  *
- * prisma/escolas.ts e a fonte da verdade e esta versionada, entao o upsert sobrescreve
- * nome e CIE. Correcao de cadastro se faz la, nao so pela tela - senao o proximo seed
- * desfaz a edicao.
+ * prisma/escolas.ts é a fonte da verdade e está versionada, então o upsert
+ * sobrescreve nome e sigla. Correção de cadastro se faz lá.
  */
 
 async function main() {
@@ -32,10 +33,46 @@ async function main() {
     });
   }
 
+  // Trava: sigla de unidade que já emitiu é imutável. O código está impresso em
+  // campo e carrega aquela sigla para sempre. Sem esta checagem, uma edição
+  // distraída em escolas.ts passaria por cima da regra pelo caminho do seed.
+  const bloqueadas: string[] = [];
   for (const escola of ESCOLAS) {
+    const atual = await prisma.escola.findUnique({
+      where: { codigoCie: escola.codigoCie },
+      include: { _count: { select: { codigos: true } } },
+    });
+
+    if (atual && atual.sigla !== escola.sigla && atual._count.codigos > 0) {
+      bloqueadas.push(
+        `${atual.nome}: ${atual.sigla} -> ${escola.sigla} ` +
+          `(${atual._count.codigos} código(s) já emitido(s))`,
+      );
+    }
+  }
+
+  if (bloqueadas.length > 0) {
+    console.error(
+      "ABORTADO. O seed tentaria trocar a sigla de unidade que já emitiu código:\n" +
+        bloqueadas.map((b) => `  - ${b}`).join("\n") +
+        "\n\nSigla é imutável depois da primeira emissão. Reverta a sigla em " +
+        "prisma/escolas.ts para o valor atual do banco.",
+    );
+    await prisma.$disconnect();
+    process.exit(1);
+  }
+
+  let renomeadas = 0;
+  for (const escola of ESCOLAS) {
+    const antes = await prisma.escola.findUnique({
+      where: { codigoCie: escola.codigoCie },
+      select: { sigla: true },
+    });
+    if (antes && antes.sigla !== escola.sigla) renomeadas++;
+
     await prisma.escola.upsert({
-      where: { sigla: escola.sigla },
-      update: { nome: escola.nome, codigoCie: escola.codigoCie },
+      where: { codigoCie: escola.codigoCie },
+      update: { nome: escola.nome, sigla: escola.sigla },
       create: {
         sigla: escola.sigla,
         nome: escola.nome,
@@ -46,16 +83,10 @@ async function main() {
 
   const escolas = await prisma.escola.count();
   const classes = await prisma.classe.count();
-  const semCie = await prisma.escola.count({
-    where: { codigoCie: { startsWith: "PENDENTE-" } },
-  });
 
   console.log(`Seed concluido: ${escolas} escolas, ${classes} classes.`);
-  if (semCie > 0) {
-    console.log(
-      `ATENCAO: ${semCie} escola(s) ainda com codigo CIE provisorio. ` +
-        "Preencher antes da primeira emissao real.",
-    );
+  if (renomeadas > 0) {
+    console.log(`${renomeadas} sigla(s) atualizada(s) - nenhuma tinha código emitido.`);
   }
 
   await prisma.$disconnect();

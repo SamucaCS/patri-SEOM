@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { emitirLoteAction, sequencialAtualAction } from "../actions";
-import { LOTE_MAX } from "@/lib/config";
+import { LOTE_MAX, SEQUENCIAL_DIGITS, montarCodigo } from "@/lib/config";
 import { SeletorBusca, type OpcaoBusca } from "./seletor-busca";
 
 type Props = {
@@ -291,14 +291,14 @@ export function FormularioEmissao({ escolas, classes, ano }: Props) {
               <p className="codigo mt-2 text-lg font-semibold text-slate-900">
                 {proximo === null
                   ? "…"
-                  : `${escola.sigla}-${ano}${String(proximo).padStart(5, "0")}-${classe.sigla}`}
+                  : montarCodigo(escola.sigla, ano, proximo, classe.sigla)}
               </p>
               <p className="mt-2 text-xs text-slate-500">
                 {sequencial === null
                   ? "Consultando…"
                   : sequencial === 0
                     ? `Nenhum código de ${classe.sigla} emitido para ${escola.sigla} em ${ano}.`
-                    : `Último emitido em ${ano}: ${String(sequencial).padStart(5, "0")}.`}
+                    : `Último emitido em ${ano}: ${String(sequencial).padStart(SEQUENCIAL_DIGITS, "0")}.`}
               </p>
             </>
           ) : (

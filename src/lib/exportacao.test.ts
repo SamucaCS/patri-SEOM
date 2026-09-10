@@ -23,7 +23,7 @@ beforeEach(async () => {
   banco = criarBancoDeTeste();
   prisma = banco.prisma;
 
-  const escola = await criarEscola(prisma, "BRA", "BATISTA RENZI");
+  const escola = await criarEscola(prisma, "BR", "BATISTA RENZI");
   const tec = await criarClasse(prisma, "TEC", "Tecnologia");
   const mobi = await criarClasse(prisma, "MOBI", "Mobiliario");
 
@@ -78,7 +78,7 @@ describe("exportacao .xlsx", () => {
     const linha = linhas[1];
 
     expect(linha[0]).toBe(emitidos[0]);
-    expect(linha[1]).toBe("BRA");
+    expect(linha[1]).toBe("BR");
     expect(linha[2]).toBe("BATISTA RENZI");
     expect(linha[4]).toBe("TEC");
     expect(linha[5]).toBe(1);

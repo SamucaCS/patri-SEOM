@@ -20,7 +20,7 @@ beforeEach(async () => {
   banco = criarBancoDeTeste();
   prisma = banco.prisma;
 
-  const escola = await criarEscola(prisma, "BRA", "Batista Renzi");
+  const escola = await criarEscola(prisma, "BR", "Batista Renzi");
   const classe = await criarClasse(prisma, "TEC", "Tecnologia");
   escolaId = escola.id;
   classeId = classe.id;
@@ -48,21 +48,21 @@ describe("6. imutabilidade da sigla", () => {
     await emitirUm();
 
     await expect(
-      atualizarEscola({ id: escolaId, sigla: "XYZ" }, prisma),
+      atualizarEscola({ id: escolaId, sigla: "XY" }, prisma),
     ).rejects.toBeInstanceOf(CadastroError);
 
     await expect(
-      atualizarEscola({ id: escolaId, sigla: "XYZ" }, prisma),
+      atualizarEscola({ id: escolaId, sigla: "XY" }, prisma),
     ).rejects.toMatchObject({ codigo: "SIGLA_IMUTAVEL" });
 
     // A sigla no banco continua a original.
     const escola = await prisma.escola.findUniqueOrThrow({ where: { id: escolaId } });
-    expect(escola.sigla).toBe("BRA");
+    expect(escola.sigla).toBe("BR");
   });
 
   it("permite trocar a sigla enquanto nenhum codigo foi emitido", async () => {
-    const atualizada = await atualizarEscola({ id: escolaId, sigla: "BZA" }, prisma);
-    expect(atualizada.sigla).toBe("BZA");
+    const atualizada = await atualizarEscola({ id: escolaId, sigla: "BZ" }, prisma);
+    expect(atualizada.sigla).toBe("BZ");
   });
 
   it("continua permitindo editar o nome depois da primeira emissao", async () => {
@@ -74,17 +74,17 @@ describe("6. imutabilidade da sigla", () => {
     );
 
     expect(atualizada.nome).toBe("EE Batista Renzi (nome novo)");
-    expect(atualizada.sigla).toBe("BRA");
+    expect(atualizada.sigla).toBe("BR");
   });
 
   it("reenviar a mesma sigla nao e tratado como alteracao", async () => {
     await emitirUm();
 
     const atualizada = await atualizarEscola(
-      { id: escolaId, sigla: "BRA", nome: "Batista Renzi" },
+      { id: escolaId, sigla: "BR", nome: "Batista Renzi" },
       prisma,
     );
-    expect(atualizada.sigla).toBe("BRA");
+    expect(atualizada.sigla).toBe("BR");
   });
 
   it("vale tambem para sigla de classe", async () => {
@@ -97,9 +97,9 @@ describe("6. imutabilidade da sigla", () => {
 });
 
 describe("formato da sigla no cadastro", () => {
-  it("escola exige largura fixa: 2 caracteres e recusado", async () => {
+  it("escola exige largura fixa: 3 caracteres e recusado", async () => {
     await expect(
-      atualizarEscola({ id: escolaId, sigla: "AB" }, prisma),
+      atualizarEscola({ id: escolaId, sigla: "ABC" }, prisma),
     ).rejects.toMatchObject({ codigo: "SIGLA_INVALIDA" });
   });
 

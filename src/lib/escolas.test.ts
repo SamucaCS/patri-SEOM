@@ -4,6 +4,7 @@ import {
   CODIGO_REGEX,
   SIGLA_CLASSE_MAX_LENGTH,
   SIGLA_CLASSE_MIN_LENGTH,
+  SEQUENCIAL_MAX,
   SIGLA_ESCOLA_LENGTH,
 } from "./config";
 import { montarCodigo } from "./emissao";
@@ -75,17 +76,38 @@ describe("lista oficial de escolas", () => {
     // avisa que a linha mudou de forma.
     const foraDoPadrao = ESCOLAS.filter((e) => e.codigoCie.replace(/[A-Z]$/, "").length !== 6);
 
-    expect(foraDoPadrao.map((e) => e.sigla)).toEqual(["URE"]);
+    expect(foraDoPadrao.map((e) => e.sigla)).toEqual(["UR"]);
   });
 
   it("distingue a escola Raul Brasil do CEL anexo", () => {
-    const rba = ESCOLAS.find((e) => e.sigla === "RBA");
-    const rbe = ESCOLAS.find((e) => e.sigla === "RBE");
+    const escola = ESCOLAS.find((e) => e.codigoCie === "006981");
+    const cel = ESCOLAS.find((e) => e.codigoCie === "985181");
 
-    // Nao sao a mesma unidade duplicada: cada uma tem CIE proprio.
-    expect(rba?.codigoCie).toBe("006981");
-    expect(rbe?.codigoCie).toBe("985181");
-    expect(rba?.codigoCie).not.toBe(rbe?.codigoCie);
+    // Nao sao a mesma unidade duplicada: cada uma tem sigla e CIE proprios.
+    expect(escola?.sigla).toBe("RR");
+    expect(cel?.sigla).toBe("RB");
+    expect(escola?.sigla).not.toBe(cel?.sigla);
+  });
+
+  it("mantem os 9 desempates de sigla exatamente como revisados", () => {
+    // Com 2 caracteres a regra automatica colide em 7 grupos. Estes 9 sao os que
+    // ficaram com a alternativa livre. Se uma regeracao mudar qualquer um, a sigla
+    // de uma escola muda - e sigla nao muda depois da primeira emissao.
+    const desempates: Record<string, string> = {
+      "902949": "AO", // ALICE ROMANOS         (natural AR)
+      "041956": "AA", // ANTONIO RODRIGUES      (natural AR)
+      "922109": "AP", // ANGELA SUELI PONTES    (natural AS)
+      "921518A": "JA", // JOSE CAMILO           (natural JC)
+      "916559": "JL", // JOVIANO SATLER         (natural JS)
+      "268297": "LK", // LUCY FRANCO KOWALSKI   (natural LF)
+      "918684": "MA", // MASAITI SEKINE         (natural MS)
+      "006981": "RR", // RAUL BRASIL            (natural RB)
+      "006993": "RI", // ROBERTO BIANCHI        (natural RB)
+    };
+
+    for (const [cie, sigla] of Object.entries(desempates)) {
+      expect(ESCOLAS.find((e) => e.codigoCie === cie)?.sigla).toBe(sigla);
+    }
   });
 });
 
@@ -109,12 +131,12 @@ describe("lista oficial de classes", () => {
 });
 
 describe("todo par escola x classe gera codigo valido", () => {
-  it("bate com CODIGO_REGEX nas 192 combinacoes", () => {
+  it("bate com CODIGO_REGEX em toda combinacao escola x classe", () => {
     const invalidos: string[] = [];
 
     for (const escola of ESCOLAS) {
       for (const classe of CLASSES) {
-        for (const sequencial of [1, 42, 99999]) {
+        for (const sequencial of [1, 42, SEQUENCIAL_MAX]) {
           const codigo = montarCodigo(escola.sigla, 2026, sequencial, classe.sigla);
           if (!CODIGO_REGEX.test(codigo)) invalidos.push(codigo);
         }

@@ -9,31 +9,39 @@ existente. Uso centralizado: só a equipe do SEOM emite; escolas não têm acess
 ## Formato do código
 
 ```
-BRA-202600001-MOBI
-│   │   │      └── sigla da classe (2 a 4 caracteres)
-│   │   └───────── sequencial de 5 dígitos, reinicia a cada ano
-│   └───────────── ano da emissão, 4 dígitos
-└───────────────── sigla da escola (sempre 3 caracteres)
+SUZ-BR20260001-MOBI
+│   │  │   │    └── sigla da classe (2 a 4 caracteres)
+│   │  │   └─────── sequencial de 4 dígitos, reinicia a cada ano
+│   │  └─────────── ano da emissão, 4 dígitos
+│   └────────────── sigla da escola (sempre 2 caracteres)
+└────────────────── prefixo fixo da URE
 ```
 
 ### Regras que não podem ser quebradas
 
 1. **O sequencial é por trio (escola, classe, ano)** e reinicia em 1 todo ano.
-   Isso não reaproveita código: `BRA-202600001-TEC` e `BRA-202700001-TEC` são
+   Isso não reaproveita código: `SUZ-BR20260001-TEC` e `SUZ-BR20270001-TEC` são
    códigos diferentes.
 2. **Código nunca é reaproveitado.** Cancelar é só marcação — o número morre ocupado
    e o contador não retrocede.
 3. **Código é imutável.** Não existe edição nem exclusão física.
 4. **A sigla da escola é imutável a partir da primeira emissão**, mesmo que a escola
    mude de nome. O nome é campo separado e continua editável.
-5. **A sigla da escola tem largura fixa.** Ela abre o código; comprimento misto
-   quebraria o parsing. A sigla da classe pode variar de 2 a 4 porque fecha o código,
-   depois de um separador próprio.
+5. **A sigla da escola tem largura fixa: 2 caracteres.** Ela fica entre o prefixo e o
+   ano, ambos de largura fixa, então o código é lido por posição — comprimento misto
+   quebraria essa leitura. A sigla da classe pode variar de 2 a 4 porque fecha o
+   código, depois de um separador próprio.
+
+   Com 2 caracteres a regra automática (iniciais das duas primeiras palavras) colide:
+   **7 colisões atingindo 16 escolas**. Por isso 9 siglas são desempatadas à mão e
+   **não saem do nome** — estão listadas em `prisma/escolas.ts`. Sem esse desempate, a
+   segunda escola de cada colisão nunca conseguiria emitir: o `codigo @unique`
+   recusaria o registro para sempre.
 6. **Siglas são sempre maiúsculas.** No SQLite, `Tec` e `TEC` são valores distintos:
    aceitar caixa mista seria uma fábrica de código duplicado.
 7. **Não há dígito verificador.** Decisão do cliente.
 
-O teto é de 99.999 códigos por escola, por classe, por ano.
+O teto é de 9.999 códigos por escola, por classe, por ano.
 
 ## As duas telas
 
@@ -58,10 +66,16 @@ Não há tela de cadastro: ver **Como mexer no cadastro**, logo abaixo.
 O cadastro de escolas e classes não tem tela. A fonte da verdade é
 [`prisma/escolas.ts`](prisma/escolas.ts), que está versionada:
 
-1. Edite o arquivo — nome, CIE, ou uma unidade nova.
-2. `npm run db:seed` — idempotente, faz upsert pela sigla, sobrescreve nome e CIE e
-   não toca em código já emitido.
+1. Edite o arquivo — nome, sigla, CIE, ou uma unidade nova.
+2. `npm run db:seed` — idempotente. A chave do upsert é o **codigoCie**, não a sigla:
+   o CIE é o identificador oficial e não muda, a sigla é invenção nossa e pode ser
+   revisada. Chavear pela sigla faria uma revisão criar uma unidade nova em vez de
+   atualizar a existente.
 3. `npm run verificar` — confirma que nada quebrou.
+
+O seed **aborta** se você tentar trocar a sigla de uma unidade que já emitiu código,
+nomeando qual e quantos códigos ela tem. Sem essa trava, uma edição distraída no
+arquivo passaria por cima da regra da sigla imutável pelo caminho do seed.
 
 A vantagem de ser assim: toda alteração de cadastro fica no git, com autor e data.
 Uma tela de CRUD não daria isso.
@@ -257,7 +271,10 @@ acesso para escolas · app mobile.
 - [ ] **Confirmar o CIE da URE.** Está gravado como `10502`, como informado. Os 63
       CIEs de escola têm 6 caracteres com zero à esquerda (`007055`, `041956`); se o
       sistema do SEOM usar o mesmo padrão, o valor seria `010502`.
-- [ ] **Confirmar que o separador `-` é aceito** no campo de patrimônio do sistema que
-      o SEOM já usa. Depois da primeira emissão real, mudar o formato é inviável.
+- [ ] **Confirmar que o formato inteiro é aceito** no campo de patrimônio do sistema
+      que o SEOM já usa: 19 caracteres e dois `-`. Depois da primeira emissão real,
+      mudar o formato é inviável.
+- [ ] **Revisar as 9 siglas desempatadas.** Nessas a sigla não sai do nome, então quem
+      opera precisa consultar em vez de deduzir. Estão no topo de `prisma/escolas.ts`.
 - [ ] **Antes da primeira emissão real, começar de um banco limpo.** O banco de
       desenvolvimento contém códigos de amostra emitidos como “Samuel (amostra)”.
