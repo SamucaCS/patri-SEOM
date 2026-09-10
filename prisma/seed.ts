@@ -25,6 +25,55 @@ async function main() {
 
   await prisma.$queryRawUnsafe("PRAGMA journal_mode = WAL;");
 
+  // Trava: o upsert de classe é chaveado pela SIGLA, então trocar a sigla de uma
+  // classe em escolas.ts não renomeia nada - cria uma classe nova e deixa a antiga
+  // onde estava. O banco terminaria com quatro classes, a tela ofereceria as quatro,
+  // e ninguém veria erro nenhum. Duplicata silenciosa é pior que falha: aqui falha.
+  //
+  // Só vale quando o banco já tem classe cadastrada; seed em banco vazio cria as três.
+  const classesNoBanco = await prisma.classe.findMany({
+    select: { sigla: true, nome: true, _count: { select: { codigos: true } } },
+  });
+
+  if (classesNoBanco.length > 0 && !process.env.PERMITIR_NOVA_CLASSE) {
+    const siglasNoBanco = new Set(classesNoBanco.map((c) => c.sigla));
+    const siglasEsperadas = new Set<string>(CLASSES.map((c) => c.sigla));
+
+    const entrando = CLASSES.filter((c) => !siglasNoBanco.has(c.sigla));
+    const sumindo = classesNoBanco.filter((c) => !siglasEsperadas.has(c.sigla));
+
+    if (entrando.length > 0 && classesNoBanco.length >= CLASSES.length) {
+      const listaEntrando = entrando.map((c) => `${c.sigla} (${c.nome})`).join(", ");
+      const listaSumindo =
+        sumindo.length > 0
+          ? sumindo
+              .map(
+                (c) =>
+                  `${c.sigla} (${c.nome}, ${c._count.codigos} código(s) emitido(s))`,
+              )
+              .join(", ")
+          : "nenhuma";
+
+      console.error(
+        [
+          "ABORTADO. O seed criaria classe nova sem tirar a antiga do caminho.",
+          "",
+          `  entraria no banco:        ${listaEntrando}`,
+          `  ficaria órfã no banco:    ${listaSumindo}`,
+          "",
+          `O banco tem ${classesNoBanco.length} classe(s) e escolas.ts define ${CLASSES.length}.`,
+          "",
+          "Se a intenção era RENOMEAR a sigla de uma classe, não dá: a sigla vai",
+          "impressa no código já emitido e é imutável. Reverta em prisma/escolas.ts.",
+          "",
+          "Se a intenção era ACRESCENTAR uma classe, rode com PERMITIR_NOVA_CLASSE=1.",
+        ].join("\n"),
+      );
+      await prisma.$disconnect();
+      process.exit(1);
+    }
+  }
+
   for (const classe of CLASSES) {
     await prisma.classe.upsert({
       where: { sigla: classe.sigla },

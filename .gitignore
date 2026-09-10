@@ -50,3 +50,6 @@ prisma/*.db-shm
 
 # o exemplo acompanha o repo; o .env real nao
 !.env.example
+
+# Log de cancelamentos: dado operacional, vive junto do banco (ver Backup no README).
+prisma/*.log

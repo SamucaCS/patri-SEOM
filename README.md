@@ -80,6 +80,19 @@ lote · Emitido em · Emitido por.
 
 Não há tela de cadastro: ver **Como mexer no cadastro**, logo abaixo.
 
+### Nunca redigite um código — copie e cole
+
+**Ao passar um código para o sistema do SEOM, use sempre o botão “Copiar lista” e
+cole.** Não leia da tela e digite.
+
+O motivo: há quatro pares de siglas de escola que são anagrama um do outro (`AP`/`PA`,
+`AJ`/`JA`, `BR`/`RB`, `CM`/`MC`). Trocar as duas letras na digitação produz um código
+**válido e existente**, que aponta para outra escola — não há dígito verificador, então
+nada acusa o erro e o bem fica lançado na unidade errada.
+
+Dentro do sistema ninguém digita sigla: ela vem do cadastro. O risco mora inteiro na
+transcrição manual, e copiar e colar o elimina.
+
 ## Como mexer no cadastro
 
 O cadastro de escolas e classes não tem tela. A fonte da verdade é
@@ -158,6 +171,7 @@ A aplicação roda na máquina do SEOM, acessível só na rede local.
 | `npm run db:seed` | carrega `prisma/escolas.ts` no banco |
 | `npm run db:studio` | Prisma Studio — inspeção e correção manual |
 | `npm run verificar` | verificação de integridade, sai com 1 se achar erro |
+| `npm run cancelar -- <id> --por "Nome"` | cancela os códigos de um lote (pede confirmação) |
 
 ### Sem autenticação — e por quê
 
@@ -183,13 +197,15 @@ o que leva direto a códigos duplicados em campo.
    prisma/emissor.db
    prisma/emissor.db-wal
    prisma/emissor.db-shm
+   prisma/cancelamentos.log
    ```
 
-   Copie os três, e com a aplicação parada. O `-wal` guarda escritas que ainda não
+   Copie todos, e com a aplicação parada. O `.log` só existe se algum lote já foi
+   cancelado; é a única memória de quem cancelou o quê. O `-wal` guarda escritas que ainda não
    foram para o arquivo principal: copiar só o `.db` com o servidor no ar pode
    capturar um estado incompleto.
 
-**Para restaurar:** pare a aplicação, coloque os três arquivos de volta em `prisma/`,
+**Para restaurar:** pare a aplicação, coloque os arquivos de volta em `prisma/`,
 e rode `npm run verificar` antes de emitir qualquer coisa.
 
 ## Verificação de integridade
@@ -252,9 +268,20 @@ como segunda barreira: se a lógica falhar, o banco recusa e a transação intei
 ## Limitações conhecidas
 
 **Cancelar código não tem tela.** O campo `cancelado` existe, a consulta o exibe e a
-emissão o respeita (o número segue ocupado), mas não há botão para marcar. Hoje isso
-se faz por `npm run db:studio`, com a aplicação parada. Se cancelamento virar rotina,
-vira tela — não fica no Studio.
+emissão o respeita (o número segue ocupado), mas não há botão para marcar. O caminho é
+a linha de comando:
+
+```bash
+npm run cancelar -- <id-do-lote> --por "Seu nome"
+```
+
+O script mostra o lote inteiro antes de agir, exige que você digite `CANCELAR` para
+confirmar, cancela todos os códigos daquele lote de uma vez e registra a operação em
+`prisma/cancelamentos.log` — que é a única memória de quem cancelou o quê, já que a
+tabela não tem coluna de auditoria. O id do lote aparece na tela de Consulta.
+
+Não há como cancelar um código isolado, nem desfazer um cancelamento pelo script. Se
+cancelamento virar rotina, vira tela.
 
 **Sem tela de cadastro.** Escolas e classes se editam por `prisma/escolas.ts` mais
 `npm run db:seed`, ou pontualmente pelo `npm run db:studio`. O histórico de quem
