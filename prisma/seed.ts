@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { opcoesSslPg } from "../src/lib/prisma";
 import { CLASSES, ESCOLAS } from "./escolas";
 
 /**
@@ -21,7 +22,7 @@ async function main() {
   if (!url) throw new Error("DIRECT_URL (ou DATABASE_URL) nao definida.");
 
   const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url }),
+    adapter: new PrismaPg({ connectionString: url, ssl: opcoesSslPg() }),
   });
 
 

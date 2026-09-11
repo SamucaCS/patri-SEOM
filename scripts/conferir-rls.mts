@@ -1,5 +1,6 @@
 import "dotenv/config";
 import pg from "pg";
+import { opcoesSslPg } from "../src/lib/prisma";
 
 /**
  * Confere RLS tabela por tabela, no schema `public` do banco real.
@@ -31,7 +32,7 @@ if (!url) {
   process.exit(1);
 }
 
-const cliente = new pg.Client({ connectionString: url });
+const cliente = new pg.Client({ connectionString: url, ssl: opcoesSslPg() });
 await cliente.connect();
 
 const { rows } = await cliente.query<{
@@ -47,12 +48,21 @@ const { rows } = await cliente.query<{
     c.relforcerowsecurity AS forcado,
     (SELECT count(*) FROM pg_policies p
       WHERE p.schemaname = 'public' AND p.tablename = c.relname)::text AS politicas,
+    -- has_table_privilege, e NAO information_schema.role_table_grants.
+    --
+    -- information_schema so mostra o que o usuario ATUAL tem direito de enxergar.
+    -- Medido: rodando como o papel emissor, ele reportava ZERO privilegios numa tabela de
+    -- outro dono que na verdade tinha SELECT, INSERT, UPDATE e DELETE abertos para
+    -- anon. Era falso negativo - o script diria "limpo" para uma tabela escancarada.
+    -- has_table_privilege responde a pergunta real e nao depende de quem pergunta.
     COALESCE((
-      SELECT string_agg(DISTINCT g.privilege_type, ', ' ORDER BY g.privilege_type)
-      FROM information_schema.role_table_grants g
-      WHERE g.table_schema = 'public'
-        AND g.table_name = c.relname
-        AND g.grantee IN ('anon', 'authenticated')
+      SELECT string_agg(x.papel || ':' || x.priv, ', ' ORDER BY x.papel, x.priv)
+      FROM (
+        SELECT r.rolname AS papel, p.priv
+        FROM (VALUES ('anon'), ('authenticated')) r(rolname),
+             (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) p(priv)
+        WHERE has_table_privilege(r.rolname, c.oid, p.priv)
+      ) x
     ), '-') AS privilegios_publicos
   FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace

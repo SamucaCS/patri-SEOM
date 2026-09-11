@@ -254,6 +254,20 @@ identificador do bem. Decidir uma vez e encerrar.
 esquerda. O campo é texto de propósito — dois CIEs terminam em letra (`007171A`,
 `921518A`) e tratá-los como número truncaria.
 
+**`information_schema` mente por omissao.** O script de RLS usava
+`information_schema.role_table_grants`, que so mostra o que o usuario ATUAL tem direito
+de enxergar. Ao trocar de `postgres` para `emissor`, ele passou a reportar ZERO
+privilegios numa tabela que tinha SELECT, INSERT, UPDATE e DELETE abertos para `anon` -
+falso negativo silencioso, no script cujo trabalho e justamente nao ter falso negativo.
+Agora usa `has_table_privilege`, que e objetivo e nao depende de quem pergunta.
+
+**A mutacao que o teste determinístico nao pegava.** Trocar `tx` pelo cliente global na
+chamada do lock compila, e a emissao continua BLOQUEANDO (o lock e disputado igual) -
+entao a checagem de "nao concluiu" passava. So que fora da transacao o `$executeRaw` roda
+em transacao implicita e **commita na hora**: o lock e solto antes do `MAX()`, e nao
+protege nada. O teste agora exige que o lock esteja sendo segurado pelo MESMO backend
+que escreve em `Codigo`, e ai a mutacao quebra.
+
 **Teste de corrida é probabilístico, e isso foi medido.** Removendo o advisory lock e
 rodando a suíte, **3 dos 4 testes de concorrência passaram**. Dois usavam só 2 lotes
 simultâneos — disputa insuficiente para cair na janela; o terceiro (anos diferentes)
@@ -267,12 +281,42 @@ de propósito o mecanismo que ele deveria testar.** Aqui isso revelou também qu
 original de `pg_locks` pegava o lock ele mesmo, em vez de observar a emissão — passava
 com o lock removido, e o nome dele mentia.
 
+**Schema próprio, fora da Data API?** Hoje as tabelas vivem em `public`, protegidas por
+RLS + zero políticas + privilégio revogado. A alternativa é um schema `emissor`, que o
+PostgREST não expõe (a Data API só publica os schemas listados no painel, por padrão
+`public` e `graphql_public`). Aí a proteção passa a ser **estrutural**: não existe rota
+HTTP para a tabela, em vez de existir e ser negada.
+
+Custo hoje, medido: 64 escolas, 3 classes, **0 códigos**, 10 FKs todas internas. Mover é
+`ALTER TABLE ... SET SCHEMA` e mexer no `schema` do adapter (que o código já aceita) —
+questão de minutos, sem downtime relevante. **Depois da primeira emissão real o custo
+sobe**: passa a haver dado de patrimônio em jogo e a janela precisa ser combinada.
+
+Ganho concreto: some a dependência de "alguém lembrar de rodar `rls:conferir` depois de
+cada migration", porque tabela nova no schema não-exposto já nasce inalcançável pela API.
+
 **Colisão de `hashtext` no advisory lock.** A chave `(escola, classe, ano)` passa por
 `hashtext`, que devolve `int4`. Duas chaves diferentes podem colidir nesse espaço — o
 efeito é apenas dois trios distintos se serializando entre si, seguro e no máximo um
 pouco mais lento. O contrário, dois trios **iguais** pegando locks diferentes, é
 impossível: mesma string, mesmo hash. Se a contenção incomodar no futuro, a saída é uma
 tabela de locks com `SELECT FOR UPDATE`, não um hash maior.
+
+**Papel proprio `emissor`, com senha propria, e nao `postgres`.** O banco e
+compartilhado: se a aplicacao conectasse como `postgres`, rotacionar a senha derrubaria
+o outro sistema junto. O papel e dono das 5 tabelas deste projeto e se cria com
+`npm run papel:criar` (idempotente, para sobreviver a um restore).
+
+Ele precisa de **`BYPASSRLS`**, e isso nao e atalho: as tabelas estao com `FORCE RLS` e
+**zero politicas**, o que nega tudo para todo mundo - inclusive o dono. Sem BYPASSRLS o
+app nao le as proprias tabelas. Conferido: `postgres` tambem nao e superuser aqui, so
+tem `rolbypassrls` - era so por isso que funcionava antes.
+
+**TLS com verificacao completa, CA por variavel de ambiente.** `SUPABASE_CA_CERT` carrega
+o PEM (conteudo, nao caminho: em serverless nao ha filesystem confiavel para apontar).
+Sem ela o sistema FALHA - degradar em silencio para `no-verify` seria pior que parar. O
+CLI do Prisma e a excecao: so entende `sslrootcert` como caminho, entao
+`prisma7.config.ts` deriva um arquivo temporario da variavel.
 
 **O banco Supabase e COMPARTILHADO com outro sistema.** Ha uma tabela `portal_docs`
 em `public` que nao e deste projeto. Consequencias que ficaram no codigo:

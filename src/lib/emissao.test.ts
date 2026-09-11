@@ -545,12 +545,43 @@ describe("unicidade nunca vira retry, e o lock e que serializa", () => {
     await new Promise((r) => setTimeout(r, 5_000));
     expect(concluiu).toBe(false);
 
+    // Solta a guarda e observa a emissao ENQUANTO ela roda.
+    //
+    // Este trecho fecha um ponto cego descoberto por mutacao: trocar `tx` pelo cliente
+    // global na chamada do lock faz a emissao continuar BLOQUEANDO (o lock e disputado
+    // do mesmo jeito), entao a checagem de "nao concluiu" sozinha passava. So que num
+    // cliente fora da transacao o `$executeRaw` roda em transacao implicita e commita
+    // na hora - o lock e solto imediatamente e nao protege o MAX() seguinte.
+    //
+    // O que distingue: o lock precisa estar sendo segurado pelo MESMO backend que esta
+    // escrevendo em Codigo. Com a mutacao, no momento da escrita nao ha lock nenhum.
     liberar();
+
+    let viuLockJuntoDaEscrita = false;
+    while (!concluiu) {
+      const r = await prisma.$queryRaw<Array<{ n: bigint }>>`
+        SELECT count(*) AS n
+        FROM pg_locks adv
+        JOIN pg_locks rel
+          ON rel.pid = adv.pid
+         AND rel.locktype = 'relation'
+         AND rel.relation = to_regclass(${`"${banco.schema}"."Codigo"`})
+        WHERE adv.locktype = 'advisory'
+          AND adv.granted
+          AND ((adv.classid::bigint << 32) | adv.objid::bigint) = ${hash}
+      `;
+      if (Number(r[0]?.n ?? 0) > 0) viuLockJuntoDaEscrita = true;
+      await new Promise((r2) => setTimeout(r2, 25));
+    }
+
     await segurando;
 
     const resultado = await emissao;
     expect(concluiu).toBe(true);
     expect(resultado.codigos).toEqual(["SUZ-BR20260001-TEC"]);
+
+    // O lock esteve na MESMA conexao que escreveu - nao numa transacao solta ao lado.
+    expect(viuLockJuntoDaEscrita).toBe(true);
 
     // `_xact_`: o lock morre no commit, sem unlock explicito.
     expect(await contarLocks()).toBe(0);

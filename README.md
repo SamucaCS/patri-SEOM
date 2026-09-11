@@ -133,8 +133,15 @@ Supabase Auth · SheetJS · Vitest. Hospedado na **Vercel**.
 | `DIRECT_URL` | 5432 (pooler, session mode) | migrations, seed, scripts e **a transação de emissão** |
 
 As duas saem do mesmo host do pooler, mudando só a porta. O host `db.<ref>.supabase.co`
-não serve: em projeto novo é IPv6 apenas. Detalhes e a dívida do `sslmode` em
-[INSTALL.md](INSTALL.md).
+não serve: em projeto novo é IPv6 apenas.
+
+**O usuário é `emissor.<ref>`, não `postgres.<ref>`.** O banco é compartilhado com
+outro sistema, e rotacionar a senha do `postgres` derrubaria os dois. O papel `emissor`
+tem senha própria, é dono das tabelas deste projeto, e se cria com
+`npm run papel:criar`. Ele precisa de `BYPASSRLS` — ver Autenticação.
+
+**TLS é verificado de verdade** (`verify-full`), com a CA em `SUPABASE_CA_CERT` como
+conteúdo PEM. Sem ela o sistema falha em vez de degradar. Ver [INSTALL.md](INSTALL.md).
 
 Era SQLite até a migração para a Vercel. Não é detalhe de infraestrutura: o SQLite
 serializava escrita por natureza, e era isso que impedia duas emissões simultâneas de
@@ -191,6 +198,7 @@ A aplicação roda na máquina do SEOM, acessível só na rede local.
 | `npm run db:generate` | gera o client do Prisma (roda sozinho no `npm install`) |
 | `npm run db:seed` | carrega `prisma/escolas.ts` no banco |
 | `npm run rls:conferir` | lista RLS tabela por tabela, sai com 1 se algo estiver descoberto |
+| `npm run papel:criar` | cria/atualiza o papel `emissor` (pede `ADMIN_URL` e `SENHA_EMISSOR`) |
 | `npm run db:studio` | Prisma Studio — inspeção e correção manual |
 | `npm run verificar` | verificação de integridade, sai com 1 se achar erro |
 | `npm run cancelar -- <id> --por "Nome"` | cancela os códigos de um lote (pede confirmação) |
@@ -215,7 +223,9 @@ também chama `exigirOperador()`. A segunda é a que vale: Server Action e Route
 são endpoints HTTP e podem ser chamados direto, sem passar por navegação.
 
 **RLS está ativo e forçado em todas as tabelas** — e é importante saber o que isso
-protege. O Supabase publica uma API REST sobre o schema `public`, acessível com a chave
+protege. Como não há **nenhuma** política, o padrão do Postgres é negar tudo, inclusive
+para o dono. É por isso que o papel `emissor` tem `BYPASSRLS`: sem ele a aplicação não
+leria as próprias tabelas. O Supabase publica uma API REST sobre o schema `public`, acessível com a chave
 pública que está no navegador; sem RLS, a base inteira sairia por ali. **RLS não
 restringe a aplicação**: o Prisma conecta como dono das tabelas e bypassa RLS por
 definição do Postgres. A barreira do app é a sessão. Confira com `npm run rls:conferir`.

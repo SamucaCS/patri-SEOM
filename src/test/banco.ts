@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { criarPrismaClientDireto } from "@/lib/prisma";
+import { criarPrismaClientDireto, opcoesSslPg } from "@/lib/prisma";
 
 const MIGRATIONS_DIR = path.resolve(process.cwd(), "prisma", "migrations");
 
@@ -90,7 +90,7 @@ function sqlDasMigrations(): string {
  * `search_path` apontado para o schema novo cria tudo no lugar certo.
  */
 async function prepararSchema(url: string, schema: string): Promise<void> {
-  const cliente = new pg.Client({ connectionString: url });
+  const cliente = new pg.Client({ connectionString: url, ssl: opcoesSslPg() });
   await cliente.connect();
   try {
     await cliente.query(`CREATE SCHEMA "${schema}"`);
@@ -102,7 +102,7 @@ async function prepararSchema(url: string, schema: string): Promise<void> {
 }
 
 async function removerSchema(url: string, schema: string): Promise<void> {
-  const cliente = new pg.Client({ connectionString: url });
+  const cliente = new pg.Client({ connectionString: url, ssl: opcoesSslPg() });
   await cliente.connect();
   try {
     await cliente.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

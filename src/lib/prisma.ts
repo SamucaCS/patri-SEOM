@@ -33,6 +33,63 @@ function exigir(nome: "DATABASE_URL" | "DIRECT_URL"): string {
 }
 
 /**
+ * TLS com verificacao completa da identidade do servidor.
+ *
+ * A CA vem em `SUPABASE_CA_CERT`, como conteudo PEM - nao como caminho de arquivo. Num
+ * deploy serverless nao ha sistema de arquivos confiavel para apontar, e caminho
+ * relativo quebra dependendo de onde o processo sobe; PEM em variavel de ambiente vale
+ * igual na Vercel, no `.env` local e num script de manutencao.
+ *
+ * Aceita o PEM com quebras de linha reais (dotenv com aspas) ou com `\n` escapado, que e
+ * o formato que cabe num campo de uma linha no painel da Vercel.
+ *
+ * Sem a CA isto FALHA, de proposito. O estado anterior era `sslmode=no-verify`, que
+ * criptografa mas aceita qualquer certificado - ou seja, nao protege contra alguem no
+ * meio do caminho. Falhar e melhor que degradar em silencio para o modo fraco.
+ */
+function certificadoCa(): string {
+  const bruto = process.env.SUPABASE_CA_CERT?.trim();
+
+  if (!bruto) {
+    throw new Error(
+      "SUPABASE_CA_CERT nao definida. Ela carrega o certificado da CA do Supabase (o " +
+        "conteudo PEM, nao o caminho) e e o que permite verificar a identidade do " +
+        "servidor. Sem ela a conexao so poderia seguir sem verificar, o que este " +
+        "codigo recusa. Ver INSTALL.md.",
+    );
+  }
+
+  const pem = bruto.includes("\\n") ? bruto.replace(/\\n/g, "\n") : bruto;
+
+  if (!pem.includes("-----BEGIN CERTIFICATE-----")) {
+    throw new Error(
+      "SUPABASE_CA_CERT nao parece ser um PEM: falta a linha " +
+        "-----BEGIN CERTIFICATE-----. Confira se o valor nao ficou truncado.",
+    );
+  }
+
+  return pem;
+}
+
+/**
+ * Opcoes de TLS para o `pg`. Exportada porque os scripts de manutencao e o harness de
+ * teste abrem `pg.Client` direto e precisam da mesma verificacao.
+ */
+export function opcoesSslPg(): { ca: string; rejectUnauthorized: true } {
+  return { ca: certificadoCa(), rejectUnauthorized: true };
+}
+
+/**
+ * Tira `sslmode` da URL.
+ *
+ * Se a URL ainda trouxer `sslmode=no-verify` de uma configuracao antiga, ela venceria a
+ * verificacao que acabamos de montar - e voltaria ao modo fraco sem avisar.
+ */
+function semSslmode(url: string): string {
+  return url.replace(/([?&])sslmode=[^&]*&?/g, "$1").replace(/[?&]$/, "");
+}
+
+/**
  * Client apontado para uma URL especifica.
  *
  * `schema` existe para os testes: cada arquivo de teste roda no seu proprio schema do
@@ -41,7 +98,10 @@ function exigir(nome: "DATABASE_URL" | "DIRECT_URL"): string {
  */
 export function criarPrismaClient(url?: string, schema?: string): PrismaClient {
   const adapter = new PrismaPg(
-    { connectionString: url ?? exigir("DATABASE_URL") },
+    {
+      connectionString: semSslmode(url ?? exigir("DATABASE_URL")),
+      ssl: opcoesSslPg(),
+    },
     schema ? { schema } : undefined,
   );
   return new PrismaClient({ adapter });
@@ -55,7 +115,10 @@ export function criarPrismaClient(url?: string, schema?: string): PrismaClient {
  */
 export function criarPrismaClientDireto(url?: string, schema?: string): PrismaClient {
   const adapter = new PrismaPg(
-    { connectionString: url ?? exigir("DIRECT_URL") },
+    {
+      connectionString: semSslmode(url ?? exigir("DIRECT_URL")),
+      ssl: opcoesSslPg(),
+    },
     schema ? { schema } : undefined,
   );
   return new PrismaClient({ adapter });

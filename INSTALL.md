@@ -291,33 +291,33 @@ Dois avisos que valem mais desde a migração:
 
 ---
 
-## Dívida conhecida: `sslmode=no-verify`
+## TLS: verificação completa, via variável de ambiente
 
-As connection strings usam `sslmode=no-verify`. Vale saber exatamente o que isso
-significa, porque a diferença é real:
+As connection strings **não** usam `sslmode`. A verificação vem da CA carregada em
+`SUPABASE_CA_CERT`, como **conteúdo PEM** — não caminho de arquivo. Em deploy
+serverless não há sistema de arquivos confiável para apontar, e caminho relativo quebra
+dependendo de onde o processo sobe.
 
-- **A conexão é criptografada.** Senha e dados não trafegam em claro, e escuta passiva
-  na rede não lê nada.
-- **A identidade do servidor não é verificada.** Um atacante capaz de se pôr no meio do
-  caminho — DNS envenenado, rota sequestrada — poderia apresentar qualquer certificado e
-  a conexão seria aceita.
+Isso dá `verify-full`: valida a cadeia **e** o hostname. Foi medido contra
+`aws-0-us-west-2.pooler.supabase.com` antes de entrar.
 
-Por que está assim: `sslmode=require` falha com `SELF_SIGNED_CERT_IN_CHAIN`, porque o
-certificado do pooler do Supabase não é assinado por uma CA que o Node confia por padrão.
+**Sem a CA o sistema falha, de propósito.** O estado anterior era `sslmode=no-verify`,
+que criptografa mas aceita qualquer certificado — não protege contra alguém no meio do
+caminho. Degradar em silêncio para o modo fraco seria pior que parar.
 
-**Como fechar isso**, quando valer a pena:
+### Onde pegar
 
-1. Painel do Supabase → Settings → Database → **SSL Configuration** → baixe o
-   certificado da CA (`prod-ca-2021.crt`).
-2. Guarde no repositório (o certificado é público, não é segredo).
-3. Troque nas duas strings:
+Painel → Settings → Database → **SSL Configuration** → *Download certificate*. Cole o
+PEM numa linha só, com `
+` no lugar das quebras. O código aceita as duas formas
+(quebras reais ou `
+` escapado).
 
-   ```
-   ?sslmode=verify-full&sslrootcert=./certs/prod-ca-2021.crt
-   ```
+### A exceção: o CLI do Prisma
 
-4. Na Vercel, o arquivo precisa entrar no bundle — confirme que ele é lido em runtime
-   antes de considerar resolvido.
+O CLI só entende `sslrootcert`, que é caminho de arquivo — ele não aceita PEM em
+memória. Por isso `prisma7.config.ts` **deriva** um arquivo temporário da variável a
+cada execução. A variável continua sendo a fonte da verdade; o arquivo é artefato.
 
-Quem opera na rede do SEOM, contra um banco na internet pública, está no cenário em que
-isso importa mais. Não é urgente, mas é dívida — não "escolha de configuração".
+Sem isso, migration teria que rodar com `sslmode=no-verify` — justamente o modo que
+saiu do resto do sistema.

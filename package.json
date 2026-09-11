@@ -17,6 +17,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "verificar": "tsx scripts/verificar.mts",
     "rls:conferir": "tsx scripts/conferir-rls.mts",
+    "papel:criar": "tsx scripts/criar-papel-emissor.mts",
     "db:studio": "prisma studio",
     "cancelar": "tsx scripts/cancelar-lote.mts"
   },
