@@ -320,6 +320,16 @@ Sem ela o sistema FALHA - degradar em silencio para `no-verify` seria pior que p
 CLI do Prisma e a excecao: so entende `sslrootcert` como caminho, entao
 `prisma7.config.ts` deriva um arquivo temporario da variavel.
 
+**O PEM e normalizado antes de usar, e isso veio de uma falha real.** No primeiro deploy
+na Vercel o valor chegou com as quebras de linha viradas em ESPACO. O OpenSSL descarta um
+PEM assim **em silencio**: nao existe erro de "certificado malformado", a validacao so
+passa a usar o store padrao, que nao conhece a CA privada do Supabase, e o erro que chega
+e `P1011: self-signed certificate in certificate chain` - que manda investigar servidor,
+pooler e `sslmode`, tudo menos a colagem. `normalizarPemDaCa` reconstroi o bloco a partir
+dos caracteres validos de base64, entao os tres formatos de colagem valem, e valor
+truncado ou com aspas falha dizendo o que e. Isso conserta a FORMA do valor, nunca o que
+esta sendo verificado - `rejectUnauthorized` continua `true` e sem a CA o sistema para.
+
 **O banco Supabase e COMPARTILHADO com outro sistema.** Ha uma tabela `portal_docs`
 em `public` que nao e deste projeto. Consequencias que ficaram no codigo:
 

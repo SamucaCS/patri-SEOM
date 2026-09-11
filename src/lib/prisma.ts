@@ -32,6 +32,61 @@ function exigir(nome: "DATABASE_URL" | "DIRECT_URL"): string {
   return valor;
 }
 
+const PEM_INICIO = "-----BEGIN CERTIFICATE-----";
+const PEM_FIM = "-----END CERTIFICATE-----";
+
+/**
+ * Normaliza o PEM da CA, venha ele no formato que vier.
+ *
+ * Isto existe por causa de uma falha real em producao, e a mensagem dela apontava para o
+ * lugar errado: o PEM chegou na Vercel com as quebras de linha viradas em ESPACO. O
+ * OpenSSL nao aceita esse formato, mas tambem nao reclama - ele descarta o certificado
+ * EM SILENCIO. O Node entao valida a conexao contra o store padrao, nao acha a CA do
+ * Supabase (que e privada) e falha com "self-signed certificate in certificate chain".
+ * Quem le esse erro vai investigar o servidor, o pooler, o sslmode - nunca a colagem.
+ *
+ * Base64 nao tem espaco nem quebra de linha significativa, entao reconstruir o bloco a
+ * partir so dos caracteres validos e seguro e deterministico: aceita PEM com quebras
+ * reais (dotenv com aspas), com `\n` escapado (campo de uma linha do painel), ou com as
+ * quebras comidas pelo caminho. O conteudo do certificado e o mesmo nos tres casos - isto
+ * conserta a FORMA, nunca o que esta sendo verificado.
+ *
+ * Exportada para poder ser testada sem abrir conexao.
+ */
+export function normalizarPemDaCa(bruto: string): string {
+  const comQuebras = bruto.includes("\\n") ? bruto.replace(/\\n/g, "\n") : bruto;
+
+  const blocos = [
+    ...comQuebras.matchAll(
+      /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/g,
+    ),
+  ];
+
+  if (blocos.length === 0) {
+    throw new Error(
+      "SUPABASE_CA_CERT nao parece ser um PEM: nao ha um bloco completo entre " +
+        `${PEM_INICIO} e ${PEM_FIM}. Confira se o valor nao ficou truncado ou se ` +
+        "sobraram aspas do .env. Ver INSTALL.md.",
+    );
+  }
+
+  return (
+    blocos
+      .map((bloco) => {
+        const corpo = bloco[1].replace(/[^A-Za-z0-9+/=]/g, "");
+        if (corpo.length === 0) {
+          throw new Error(
+            "SUPABASE_CA_CERT tem o cabecalho do PEM mas nenhum conteudo entre " +
+              "BEGIN e END. O valor chegou vazio ou truncado.",
+          );
+        }
+        const linhas = corpo.match(/.{1,64}/g) ?? [];
+        return [PEM_INICIO, ...linhas, PEM_FIM].join("\n");
+      })
+      .join("\n") + "\n"
+  );
+}
+
 /**
  * TLS com verificacao completa da identidade do servidor.
  *
@@ -39,9 +94,6 @@ function exigir(nome: "DATABASE_URL" | "DIRECT_URL"): string {
  * deploy serverless nao ha sistema de arquivos confiavel para apontar, e caminho
  * relativo quebra dependendo de onde o processo sobe; PEM em variavel de ambiente vale
  * igual na Vercel, no `.env` local e num script de manutencao.
- *
- * Aceita o PEM com quebras de linha reais (dotenv com aspas) ou com `\n` escapado, que e
- * o formato que cabe num campo de uma linha no painel da Vercel.
  *
  * Sem a CA isto FALHA, de proposito. O estado anterior era `sslmode=no-verify`, que
  * criptografa mas aceita qualquer certificado - ou seja, nao protege contra alguem no
@@ -59,16 +111,7 @@ function certificadoCa(): string {
     );
   }
 
-  const pem = bruto.includes("\\n") ? bruto.replace(/\\n/g, "\n") : bruto;
-
-  if (!pem.includes("-----BEGIN CERTIFICATE-----")) {
-    throw new Error(
-      "SUPABASE_CA_CERT nao parece ser um PEM: falta a linha " +
-        "-----BEGIN CERTIFICATE-----. Confira se o valor nao ficou truncado.",
-    );
-  }
-
-  return pem;
+  return normalizarPemDaCa(bruto);
 }
 
 /**

@@ -113,7 +113,7 @@ Antes do primeiro deploy, em **Environment Variables**, as três:
 ```
 DATABASE_URL                    (pooler, 6543, com ?pgbouncer=true)
 DIRECT_URL                      (direta, 5432)
-SUPABASE_CA_CERT                (o PEM inteiro, numa linha — ver TLS, no fim)
+SUPABASE_CA_CERT                (o PEM inteiro, sem aspas — ver TLS, no fim)
 ```
 
 Marque as três para **Production**, **Preview** e **Development**.
@@ -214,8 +214,8 @@ travar em algum passo, o texto está errado — não ela.
 | Sintoma | Causa provável | O que fazer |
 |---------|----------------|-------------|
 | a aplicação sobe mas erra na primeira consulta | falta `DATABASE_URL`/`DIRECT_URL` na Vercel | confira as 3 variáveis e faça redeploy |
-| erro de certificado/TLS ao conectar | `SUPABASE_CA_CERT` ausente ou com o PEM quebrado | cole o PEM inteiro numa linha, com `
-` nas quebras |
+| `P1011: self-signed certificate in certificate chain` | a CA não chegou — valor truncado, com aspas sobrando, ou ausente | recole o PEM inteiro (qualquer formato serve) e **redeploy**; ver TLS, no fim |
+| `SUPABASE_CA_CERT nao parece ser um PEM` / `vazio ou truncado` | o valor chegou cortado ou com lixo em volta | recole do `-----BEGIN` ao `-----END`, sem aspas |
 | `verificar` acusa que a conexão de emissão não sustentou advisory lock | `DIRECT_URL` está no pooler (6543) | troque para 5432 |
 | erro de "too many connections" | a aplicação está usando a direta em runtime | `DATABASE_URL` precisa ser a 6543 com `?pgbouncer=true` |
 | `SEQUENCIAL_DUPLICADO` na emissão | o advisory lock não está protegendo | é bug, não contenção. Veja o log do servidor: ele diz o que suspeitar, em ordem |
@@ -285,10 +285,21 @@ caminho. Degradar em silêncio para o modo fraco seria pior que parar.
 ### Onde pegar
 
 Painel → Settings → Database → **SSL Configuration** → *Download certificate*. Cole o
-PEM numa linha só, com `
-` no lugar das quebras. O código aceita as duas formas
-(quebras reais ou `
-` escapado).
+conteúdo do arquivo no campo *Value*, **sem aspas** e sem o nome da variável junto.
+
+**Qualquer formato de colagem serve**, e isso não é detalhe de conveniência — custou o
+primeiro deploy. O código normaliza o PEM antes de usar: quebras de linha reais, `\n`
+escapado (campo de uma linha), ou as quebras viradas em espaço pelo caminho, tudo vira o
+mesmo certificado. O que **não** serve é valor truncado ou com aspas sobrando; nesse caso
+ele falha dizendo exatamente isso.
+
+**Por que a normalização existe.** No primeiro deploy o PEM chegou à Vercel com as
+quebras viradas em espaço. O OpenSSL **descarta um PEM assim em silêncio** — não existe
+erro de "certificado malformado". A conexão passa a ser validada contra o store padrão,
+que não conhece a CA privada do Supabase, e o Postgres responde
+`P1011: self-signed certificate in certificate chain`. A mensagem manda investigar o
+servidor, o pooler, o `sslmode` — e o defeito estava na colagem. `src/lib/prisma.test.ts`
+trava os três formatos.
 
 ### A exceção: o CLI do Prisma
 

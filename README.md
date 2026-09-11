@@ -142,7 +142,10 @@ tem senha própria, é dono das tabelas deste projeto, e se cria com
 `npm run papel:criar`. Ele precisa de `BYPASSRLS` — ver Sem autenticação.
 
 **TLS é verificado de verdade** (`verify-full`), com a CA em `SUPABASE_CA_CERT` como
-conteúdo PEM. Sem ela o sistema falha em vez de degradar. Ver [INSTALL.md](INSTALL.md).
+conteúdo PEM. Sem ela o sistema falha em vez de degradar. O PEM é normalizado antes de
+usar — quebras reais, `\n` escapado ou quebras viradas em espaço dão no mesmo — porque um
+PEM malformado é descartado **em silêncio** pelo OpenSSL e o erro que aparece culpa o
+servidor. Ver [INSTALL.md](INSTALL.md).
 
 Era SQLite até a migração para a Vercel. Não é detalhe de infraestrutura: o SQLite
 serializava escrita por natureza, e era isso que impedia duas emissões simultâneas de
