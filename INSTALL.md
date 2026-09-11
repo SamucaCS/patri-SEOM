@@ -46,9 +46,10 @@ e máquina sem rota IPv6 recebe `ENETUNREACH`. IPv4 direto é add-on pago. O ses
 pooler na 5432 sustenta transação interativa e advisory lock igual à conexão direta —
 foi verificado, não presumido.
 
-**Acrescente `sslmode=no-verify` nas duas.** Sem isso o Node recusa o certificado do
-pooler com `SELF_SIGNED_CERT_IN_CHAIN`. Isso mantém a conexão criptografada, mas **não
-verifica a identidade do servidor** — ver "Dívida conhecida" no fim deste arquivo.
+**Não acrescente `sslmode` nenhum nas duas** — nem `require`, nem `no-verify`. O código
+remove esse parâmetro de propósito e monta a verificação de TLS a partir da CA em
+`SUPABASE_CA_CERT`, que é verificação completa. Um `sslmode` na URL venceria essa
+montagem e voltaria ao modo fraco sem avisar. Ver "TLS" no fim deste arquivo.
 
 **Não troque as duas de lugar.** A transação de emissão pega um advisory lock para
 serializar o contador; pelo pooler em *transaction mode*, os statements da mesma
@@ -59,21 +60,10 @@ O sistema tem duas defesas contra essa troca: `npm run verificar` tenta uma tran
 interativa com advisory lock e acusa se não sustentar, e o harness de teste se recusa a
 rodar se `DIRECT_URL` apontar para a porta 6543.
 
-### 1.3 Copiar as chaves de autenticação
-
-**Project Settings → API:**
-
-- `NEXT_PUBLIC_SUPABASE_URL` — a URL do projeto
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — a chave pública (anon / publishable)
-
-Essas duas vão para o navegador e isso é esperado. Não há segredo nelas: quem autoriza é
-a sessão do usuário, e as tabelas do patrimônio estão fechadas por RLS para qualquer
-acesso vindo por essa chave.
-
-### 1.4 Criar as tabelas e carregar as escolas
+### 1.3 Criar as tabelas e carregar as escolas
 
 Da sua máquina, com o repositório clonado e `npm install` feito, crie um `.env` na raiz
-(há modelo em `.env.example`) com as quatro variáveis. Então:
+(há modelo em `.env.example`) com as três variáveis. Então:
 
 ```
 npm run db:deploy      # cria as tabelas e aplica o RLS
@@ -96,32 +86,16 @@ teste embaralha o sequencial, e código emitido nunca é reaproveitado.
 zero políticas permissivas, e nenhum privilégio para `anon`/`authenticated`. Ele sai com
 erro se qualquer tabela estiver descoberta.
 
-### 1.5 Criar os usuários — um por um, na mão
+### 1.4 Fechar o Auth do Supabase, que o sistema não usa
 
-**Authentication → Users → Add user**, com **Create new user** e senha definida por
-você. Marque *Auto Confirm User*.
+**Não há login neste sistema** — ver "Sem autenticação" no [README](README.md#sem-autenticação).
+Não crie usuário: quem tiver a URL usa o sistema, e "Emitido por" é um campo digitado.
 
-Não existe cadastro aberto, não existe recuperação de senha por e-mail e não existe
-convite por link. Isso é decisão, não pendência: são poucas pessoas, todas conhecidas, e
-a alternativa seria uma superfície de auto-cadastro num sistema que emite identificador
-de patrimônio.
-
-Para que o nome da pessoa apareça em "Emitido por" em vez do e-mail, preencha o
-**User Metadata** com:
-
-```json
-{ "nome": "Samuel Silva" }
-```
-
-Sem isso, "Emitido por" grava o e-mail. Funciona, mas fica feio na planilha.
-
-### 1.6 Desligar o auto-cadastro
-
-**Authentication → Providers → Email:** deixe *Enable email provider* ligado e
-**desligue _Enable sign ups_**. Sem isso, qualquer pessoa com a URL cria a própria conta
-e passa a emitir código de patrimônio.
-
-Confirme também que os outros provedores (Google, GitHub, etc.) estão desligados.
+Mesmo assim, feche o Auth do projeto, porque o Supabase o publica de qualquer jeito:
+**Authentication → Providers → Email:** desligue *Enable sign ups*, e confirme que os
+outros provedores (Google, GitHub, etc.) estão desligados. Conta criada ali não abre
+nada — as tabelas estão sob `FORCE RLS` sem nenhuma política, e a API REST nega tudo —
+mas endpoint de cadastro aberto sem ninguém olhando não serve a nada.
 
 ---
 
@@ -134,32 +108,33 @@ detectado: Next.js. Não mude nada de build.
 
 ### 2.2 Variáveis de ambiente
 
-Antes do primeiro deploy, em **Environment Variables**, as quatro:
+Antes do primeiro deploy, em **Environment Variables**, as três:
 
 ```
 DATABASE_URL                    (pooler, 6543, com ?pgbouncer=true)
 DIRECT_URL                      (direta, 5432)
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY
+SUPABASE_CA_CERT                (o PEM inteiro, numa linha — ver TLS, no fim)
 ```
 
-Marque as quatro para **Production**, **Preview** e **Development**.
+Marque as três para **Production**, **Preview** e **Development**.
 
-Sem `DATABASE_URL`/`DIRECT_URL` a aplicação sobe e falha na primeira consulta. Sem as
-duas do Supabase, o middleware **falha fechado** e manda todo mundo para o login, que
-por sua vez não consegue autenticar — a tela responde, mas ninguém entra. Foi escolhido
-assim de propósito: melhor ninguém entrar do que todos entrarem sem sessão.
+Sem `DATABASE_URL`/`DIRECT_URL` a aplicação sobe e falha na primeira consulta. Sem
+`SUPABASE_CA_CERT` ela **falha de propósito**, em vez de conectar sem verificar o
+certificado do servidor.
 
 ### 2.3 Publicar
 
-**Deploy.** Ao terminar, abra a URL: precisa cair na tela de login. Entre com um dos
-usuários criados no passo 1.5 e confirme que:
+**Deploy.** Ao terminar, abra a URL — ela abre direto na tela de emissão, sem login.
+Confirme que:
 
-- a tela de emissão abre e mostra seu nome em "Emitido por";
-- "Emitido por" **não é editável** — é a sua sessão;
+- a tela de emissão abre com as 64 escolas e as 3 classes nos seletores;
+- "Emitido por" é um campo de texto, e o nome digitado fica lembrado na próxima vez;
+- escolher escola e classe mostra o sequencial atual do trio;
 - a consulta lista e a exportação baixa o `.xlsx`;
-- **Sair** derruba a sessão e volta ao login;
-- abrir a URL numa janela anônima cai no login, sem ver dado nenhum.
+- nenhuma tela pede senha — se alguma pedir, sobrou código de autenticação.
+
+**Confirme também o outro lado disso:** abrir a URL numa janela anônima dá acesso
+completo, e é assim por decisão. Quem tiver o endereço emite código e baixa a base.
 
 ---
 
@@ -221,9 +196,10 @@ Database → Backups → escolha o ponto → **Restore**. Derruba o banco por al
 
 5. Rode `npm run verificar` e confira a contagem de códigos contra o último `.xlsx`
    exportado.
-6. Recrie os usuários — `pg_restore` do banco **não traz o Authentication**. Essa é a
-   pegadinha desta arquitetura: banco e usuários são backups separados.
-7. Atualize as quatro variáveis na Vercel e faça um redeploy.
+6. Feche o Auth do projeto novo (1.4). O sistema não o usa, mas projeto novo nasce com
+   *sign ups* ligado.
+7. Atualize as três variáveis na Vercel e faça um redeploy — `SUPABASE_CA_CERT` é do
+   projeto novo, não do antigo.
 
 ### 3.5 Faça isso uma vez, antes de considerar pronto
 
@@ -237,14 +213,14 @@ travar em algum passo, o texto está errado — não ela.
 
 | Sintoma | Causa provável | O que fazer |
 |---------|----------------|-------------|
-| tudo cai no login, mesmo com senha certa | falta `NEXT_PUBLIC_SUPABASE_*` na Vercel | confira as 4 variáveis e faça redeploy |
-| "E-mail ou senha incorretos" com senha certa | usuário não confirmado | painel → Users → Auto Confirm |
+| a aplicação sobe mas erra na primeira consulta | falta `DATABASE_URL`/`DIRECT_URL` na Vercel | confira as 3 variáveis e faça redeploy |
+| erro de certificado/TLS ao conectar | `SUPABASE_CA_CERT` ausente ou com o PEM quebrado | cole o PEM inteiro numa linha, com `
+` nas quebras |
 | `verificar` acusa que a conexão de emissão não sustentou advisory lock | `DIRECT_URL` está no pooler (6543) | troque para 5432 |
 | erro de "too many connections" | a aplicação está usando a direta em runtime | `DATABASE_URL` precisa ser a 6543 com `?pgbouncer=true` |
 | `SEQUENCIAL_DUPLICADO` na emissão | o advisory lock não está protegendo | é bug, não contenção. Veja o log do servidor: ele diz o que suspeitar, em ordem |
 | testes recusam rodar citando porta 6543 | `DIRECT_URL` errada no `.env` local | idem: 5432 |
 | `Cannot find module '../src/generated/prisma/client'` | client do Prisma não gerado | `npm run db:generate` |
-| a exportação devolve 401 | sem sessão | entre no sistema |
 
 O comando que responde a maior parte das dúvidas:
 
@@ -283,7 +259,8 @@ Dois avisos que valem mais desde a migração:
 - **Não** aponte `DATABASE_URL` para a porta 5432 "para simplificar". A aplicação
   esgotaria as conexões do Postgres na primeira hora de uso real.
 - **Não** aponte `DIRECT_URL` para o pooler. É a falha calada desta arquitetura.
-- **Não** ligue *Enable sign ups* no Supabase.
+- **Não** ligue *Enable sign ups* no Supabase. O sistema não usa Auth; o endpoint
+  ficaria aberto sem servir a nada.
 - **Não** use a `service_role key` na aplicação. Ela ignora RLS; não há motivo para ela
   existir aqui.
 - **Não** crie tabela nova sem RLS. Tabela nova nasce **descoberta**, e a API REST do

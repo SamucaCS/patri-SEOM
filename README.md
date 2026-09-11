@@ -123,7 +123,8 @@ aquela checagem existe para pegar.
 ## Stack
 
 Next.js 15 · React 19 · TypeScript · Tailwind 4 · Prisma 7 + **Postgres (Supabase)** ·
-Supabase Auth · SheetJS · Vitest. Hospedado na **Vercel**.
+SheetJS · Vitest. Hospedado na **Vercel**. **Sem autenticação** — ver a seção de
+mesmo nome.
 
 **Duas conexões, de propósito** (ver `src/lib/prisma.ts`):
 
@@ -138,7 +139,7 @@ não serve: em projeto novo é IPv6 apenas.
 **O usuário é `emissor.<ref>`, não `postgres.<ref>`.** O banco é compartilhado com
 outro sistema, e rotacionar a senha do `postgres` derrubaria os dois. O papel `emissor`
 tem senha própria, é dono das tabelas deste projeto, e se cria com
-`npm run papel:criar`. Ele precisa de `BYPASSRLS` — ver Autenticação.
+`npm run papel:criar`. Ele precisa de `BYPASSRLS` — ver Sem autenticação.
 
 **TLS é verificado de verdade** (`verify-full`), com a CA em `SUPABASE_CA_CERT` como
 conteúdo PEM. Sem ela o sistema falha em vez de degradar. Ver [INSTALL.md](INSTALL.md).
@@ -159,15 +160,15 @@ Publicação na Vercel, criação do projeto Supabase, RLS, usuários e backup e
 
 ```bash
 npm install               # o postinstall roda prisma generate
-cp .env.example .env      # preencha as 4 variáveis
+cp .env.example .env      # preencha as 3 variáveis
 npm run db:deploy         # cria as tabelas e aplica o RLS
 npm run db:seed           # carrega as 64 unidades e as 3 classes
 npm run verificar         # confere a integridade
 npm run rls:conferir      # confere RLS tabela por tabela
 ```
 
-As quatro variáveis são obrigatórias: `DATABASE_URL`, `DIRECT_URL`,
-`NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+As três variáveis são obrigatórias: `DATABASE_URL`, `DIRECT_URL` e
+`SUPABASE_CA_CERT`.
 
 **`DIRECT_URL` precisa ser a conexão direta (5432), nunca o pooler.** Os testes se
 recusam a rodar se ela apontar para 6543 — pelo pooler, o advisory lock não sobrevive à
@@ -203,32 +204,35 @@ A aplicação roda na máquina do SEOM, acessível só na rede local.
 | `npm run verificar` | verificação de integridade, sai com 1 se achar erro |
 | `npm run cancelar -- <id> --por "Nome"` | cancela os códigos de um lote (pede confirmação) |
 
-### Autenticação
+### Sem autenticação
 
-**Supabase Auth, e-mail e senha.** Usuário é criado a mão no painel do Supabase, pela
-equipe do SEOM: não há cadastro aberto, nem recuperação por e-mail, nem convite por
-link. São poucas pessoas, todas conhecidas, e a alternativa seria uma superfície de
-auto-cadastro num sistema que emite identificador de patrimônio.
+**Não há login.** Foi decisão do cliente, tomada em 10/09/2026, depois de o sistema já
+ter ganhado autenticação: quem alcança a URL usa o sistema. Está escrito aqui porque a
+consequência é real e não é reversível sozinha.
 
-Não havia login enquanto o sistema vivia na rede local. Publicado na Vercel, passou a
-ser obrigatório — era o que o próprio README já dizia que aconteceria.
+**O que isso significa numa URL pública da Vercel:**
 
-**“Emitido por” vem da sessão**, não de campo digitado. A tela mostra o nome, mas o
-cliente nem envia o valor: a server action lê a sessão de novo no servidor. Antes era
-texto livre lembrado no `localStorage`, e qualquer pessoa assinava um lote com o nome
-de outra — num sistema cujo único rastro de autoria é esse campo.
+- qualquer pessoa com o endereço **emite código**. Código emitido nunca é reaproveitado
+  (regra 2), então cada emissão indevida queima números para sempre e só resta cancelar
+  — o que não devolve o número;
+- qualquer pessoa **baixa a base inteira** em `.xlsx` por `/consulta/exportar`, sem
+  filtro: nome, CIE e código das 64 unidades num arquivo;
+- **"Emitido por" é rastro, não prova.** É texto digitado, lembrado no `localStorage`
+  só para poupar digitação. Qualquer pessoa assina um lote com o nome de qualquer outra,
+  e é o único registro de autoria que o sistema tem.
 
-**Duas camadas, de propósito.** O middleware barra navegação sem sessão; cada rota
-também chama `exigirOperador()`. A segunda é a que vale: Server Action e Route Handler
-são endpoints HTTP e podem ser chamados direto, sem passar por navegação.
+**O que sobra protegendo a base.** Nada disso tira o RLS, que continua ativo e forçado
+em todas as tabelas — e vale entender o que ele protege. Como não há **nenhuma**
+política, o padrão do Postgres é negar tudo, inclusive para o dono; é por isso que o
+papel `emissor` tem `BYPASSRLS`, sem o qual a aplicação não leria as próprias tabelas.
+O Supabase publica uma API REST sobre o schema `public`, e é o RLS que fecha essa
+porta. **RLS não restringe a aplicação**: o Prisma conecta como dono das tabelas e
+bypassa RLS por definição do Postgres. Ou seja, o RLS impede que a base saia pela API do
+Supabase — não impede nada pela tela. Confira com `npm run rls:conferir`.
 
-**RLS está ativo e forçado em todas as tabelas** — e é importante saber o que isso
-protege. Como não há **nenhuma** política, o padrão do Postgres é negar tudo, inclusive
-para o dono. É por isso que o papel `emissor` tem `BYPASSRLS`: sem ele a aplicação não
-leria as próprias tabelas. O Supabase publica uma API REST sobre o schema `public`, acessível com a chave
-pública que está no navegador; sem RLS, a base inteira sairia por ali. **RLS não
-restringe a aplicação**: o Prisma conecta como dono das tabelas e bypassa RLS por
-definição do Postgres. A barreira do app é a sessão. Confira com `npm run rls:conferir`.
+**Se um dia isso precisar mudar**, o caminho já foi percorrido: o commit `faac9c4`
+trouxe Supabase Auth (`src/lib/sessao.ts`, `src/middleware.ts`, `/login`) e este commit
+o removeu. Voltar é reverter, não reconstruir.
 
 ## Backup
 
@@ -327,8 +331,6 @@ Antes de mexer, é aqui que estão as decisões:
 | `prisma/escolas.ts` | as 64 unidades e as 3 classes — fonte da verdade |
 | `prisma/schema.prisma` | modelo e o `@@unique` que é a rede de segurança |
 | `src/test/banco.ts` | schema Postgres temporário usado pelos testes |
-| `src/lib/sessao.ts` | quem está operando; `exigirOperador()` |
-| `src/middleware.ts` | barra navegação sem sessão e renova o token |
 | `prisma/migrations/*_rls/` | RLS ativo e forçado em todas as tabelas |
 
 O sequencial **não** vem de tabela de contadores: é `MAX(sequencial)` lido e gravado

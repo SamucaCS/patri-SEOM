@@ -9,23 +9,21 @@ type Props = {
   escolas: OpcaoBusca[];
   classes: OpcaoBusca[];
   ano: number;
-  /**
-   * Quem esta emitindo, vindo da SESSAO. Nao e editavel e nao e enviado pelo cliente:
-   * a server action le a sessao de novo no servidor e usa o valor de la. Esta prop
-   * existe so para a tela mostrar de quem sera o registro.
-   */
-  emitidoPor: string;
 };
 
 type Erros = Partial<
-  Record<"escolaId" | "classeId" | "quantidade" | "descricao", string>
+  Record<"escolaId" | "classeId" | "quantidade" | "descricao" | "emitidoPor", string>
 >;
 
-export function FormularioEmissao({ escolas, classes, ano, emitidoPor }: Props) {
+/** Nao ha login: o nome fica lembrado no navegador so para poupar digitacao. */
+const CHAVE_OPERADOR = "emissor-seom:emitidoPor";
+
+export function FormularioEmissao({ escolas, classes, ano }: Props) {
   const [escolaId, setEscolaId] = useState("");
   const [classeId, setClasseId] = useState("");
   const [quantidade, setQuantidade] = useState("1");
   const [descricao, setDescricao] = useState("");
+  const [emitidoPor, setEmitidoPor] = useState("");
 
   const [erros, setErros] = useState<Erros>({});
   const [enviando, setEnviando] = useState(false);
@@ -33,6 +31,17 @@ export function FormularioEmissao({ escolas, classes, ano, emitidoPor }: Props) 
   const [codigos, setCodigos] = useState<string[] | null>(null);
   const [copiado, setCopiado] = useState(false);
   const [sequencial, setSequencial] = useState<number | null>(null);
+
+  // Sem login, o operador digitaria o proprio nome a cada lote. Lembrar poupa isso -
+  // e nao e autenticacao nenhuma, so conveniencia.
+  useEffect(() => {
+    try {
+      const salvo = localStorage.getItem(CHAVE_OPERADOR);
+      if (salvo) setEmitidoPor(salvo);
+    } catch {
+      /* navegador sem storage: o campo so comeca vazio */
+    }
+  }, []);
 
   const escola = escolas.find((e) => e.id === escolaId);
   const classe = classes.find((c) => c.id === classeId);
@@ -68,8 +77,11 @@ export function FormularioEmissao({ escolas, classes, ano, emitidoPor }: Props) 
     if (descricao.trim().length < 3) {
       novos.descricao = "Descreva o lote com pelo menos 3 caracteres.";
     }
+    if (emitidoPor.trim().length === 0) {
+      novos.emitidoPor = "Informe quem está emitindo.";
+    }
     return novos;
-  }, [escolaId, classeId, quantidade, descricao]);
+  }, [escolaId, classeId, quantidade, descricao, emitidoPor]);
 
   async function aoEnviar(evento: React.FormEvent) {
     evento.preventDefault();
@@ -84,11 +96,18 @@ export function FormularioEmissao({ escolas, classes, ano, emitidoPor }: Props) 
     setCodigos(null);
     setCopiado(false);
 
+    try {
+      localStorage.setItem(CHAVE_OPERADOR, emitidoPor.trim());
+    } catch {
+      /* segue sem lembrar */
+    }
+
     const resposta = await emitirLoteAction({
       escolaId,
       classeId,
       quantidade: Number(quantidade),
       descricao,
+      emitidoPor,
     });
 
     if (resposta.ok) {
@@ -197,18 +216,32 @@ export function FormularioEmissao({ escolas, classes, ano, emitidoPor }: Props) 
             )}
           </div>
 
-          {/*
-            "Emitido por" nao e mais campo. Vem da sessao, e o servidor le de novo antes
-            de gravar - o cliente nem envia o valor. Antes era texto livre com o nome
-            lembrado no localStorage, e qualquer um podia assinar o lote com o nome de
-            qualquer outro.
-          */}
           <div>
-            <span className="block text-sm font-medium text-slate-700">Emitido por</span>
-            <p className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              {emitidoPor}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">Da sua sessão</p>
+            <label
+              htmlFor="emitidoPor"
+              className="block text-sm font-medium text-slate-700"
+            >
+              Emitido por
+            </label>
+            <input
+              id="emitidoPor"
+              type="text"
+              value={emitidoPor}
+              onChange={(e) => setEmitidoPor(e.target.value)}
+              placeholder="Seu nome"
+              className={`mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-900/20 ${
+                erros.emitidoPor
+                  ? "border-red-400 bg-red-50"
+                  : "border-slate-300 bg-white"
+              }`}
+            />
+            {erros.emitidoPor ? (
+              <p className="mt-1 text-xs font-medium text-red-600">
+                {erros.emitidoPor}
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-slate-500">Registro de auditoria</p>
+            )}
           </div>
         </div>
 

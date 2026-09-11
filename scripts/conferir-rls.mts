@@ -143,5 +143,6 @@ console.log(
   "Todas as tabelas com RLS ativo e forçado, sem política permissiva e sem\n" +
     "privilégio para os papéis da API pública.\n\n" +
     "Lembrete: isto fecha a API REST do Supabase. NÃO restringe a aplicação — o\n" +
-    "Prisma conecta como dono e bypassa RLS. A barreira do app é a sessão em cada rota.",
+    "Prisma conecta como dono e bypassa RLS. E não há login: pela tela, qualquer um\n" +
+    "emite e exporta. Ver \"Sem autenticação\" no README.",
 );

@@ -121,24 +121,27 @@ transaction mode, os statements da transação podem cair em conexões diferente
 advisory lock deixa de valer, sem erro nenhum. Há três defesas contra isso:
 `npm run verificar`, a recusa do harness de teste, e o log de `SEQUENCIAL_DUPLICADO`.
 
-**Supabase Auth, e-mail e senha, usuário criado a mão no painel.** Sem cadastro aberto,
-sem recuperação por e-mail, sem convite por link. Enquanto o sistema vivia na rede
-local não havia login e `Emitido por` era só auditoria; publicado na internet, deixou
-de bastar — como este documento já previa.
+**Não há autenticação, e isso é decisão do cliente (10/09/2026), não pendência.** O
+sistema já teve Supabase Auth (commit `faac9c4`); o login foi removido a pedido, com o
+sistema indo para uma URL pública da Vercel. **Não reintroduza login sem pedido
+explícito** — e se for pedido, é reverter, não reconstruir.
 
-**`Emitido por` passou a vir da sessão.** Era texto livre lembrado no `localStorage`, e
-qualquer pessoa assinava um lote com o nome de outra. Agora o cliente nem envia o valor:
-a server action lê a sessão no servidor.
+**`Emitido por` é rastro de auditoria, nunca identidade.** É texto digitado, lembrado no
+`localStorage` só para poupar digitação, e o cliente é quem envia o valor. Qualquer
+pessoa assina um lote com o nome de outra. Não trate esse campo como autoria confiável
+em nenhuma regra nova.
+
+**Toda rota é pública.** `/`, `/consulta` e `/consulta/exportar` respondem a quem tiver
+a URL — e a exportação sem filtro devolve a base inteira (nome, CIE e código das 64
+unidades). Ao criar rota nova, parta disso.
 
 **RLS ativo e forçado em todas as tabelas — e ele não protege o que parece.** Fecha a
-API REST que o Supabase publica sobre o schema `public`, acessível com a chave que está
-no navegador. **Não** restringe a aplicação: o Prisma conecta como dono das tabelas e
-bypassa RLS por definição do Postgres. A barreira do app é a sessão verificada em cada
-rota. Quem ler a migration de RLS esperando limite para o app vai se enganar.
-
-**Duas camadas de sessão, de propósito.** Middleware barra navegação; cada rota chama
-`exigirOperador()`. A segunda é a que vale — Server Action e Route Handler são
-endpoints HTTP e podem ser chamados direto.
+API REST que o Supabase publica sobre o schema `public`. **Não** restringe a aplicação:
+o Prisma conecta como dono das tabelas e bypassa RLS por definição do Postgres (é por
+isso que o papel `emissor` precisa de `BYPASSRLS`: sem nenhuma política, `FORCE RLS`
+nega tudo inclusive para o dono). Sem login, o RLS é a única barreira que sobrou, e ela
+só cobre a API do Supabase — não a tela. Quem ler a migration de RLS esperando limite
+para o app vai se enganar.
 
 **`pg_advisory_xact_lock` vai por `$executeRaw`, não `$queryRaw`.** A função devolve
 `void`, e o Prisma não consegue desserializar coluna desse tipo — falha com
@@ -228,12 +231,11 @@ Estas não são técnicas e são as que matam sistema de órgão público:
 
 1. **Escola ou classe nova passa pelo Samuel.** Não há tela de cadastro. Documentar no
    README a quem recorrer e como pedir.
-2. **Os usuários são criados a mão no painel do Supabase.** Pessoa nova no SEOM não
-   entra sozinha. E backup de banco **não traz o Authentication**: restaurar o banco
-   não restaura quem pode entrar.
+2. **Quem tem a URL, usa o sistema.** Não há login nem lista de usuários: controlar
+   quem emite virou questão de a quem o endereço é passado. Se o endereço vazar, não há
+   o que revogar — só trocar o projeto de lugar.
 3. **Backup precisa ter sido restaurado ao menos uma vez, por outra pessoa**, seguindo
-   o INSTALL.md. Backup nunca testado não é backup - e aqui restaurar tem duas metades
-   independentes: o banco (pg_restore) e os usuários (recriados a mão).
+   o INSTALL.md. Backup nunca testado não é backup.
 4. **Alguém do SEOM treinado** no que fazer quando não abrir e onde está o backup — não
    em usar a tela.
 
@@ -333,9 +335,9 @@ em `public` que nao e deste projeto. Consequencias que ficaram no codigo:
 Se o patrimonio ganhar projeto Supabase proprio, os tres pontos acima podem voltar ao
 formato amplo, que e mais seguro.
 
-**`sslmode=no-verify` nas connection strings.** Criptografa, mas nao verifica a
-identidade do servidor. `sslmode=require` falha porque o certificado do pooler nao e
-assinado por CA que o Node confie. Como fechar esta em INSTALL.md, em "Divida conhecida".
+~~`sslmode=no-verify` nas connection strings.~~ **Fechado.** A verificacao agora e
+completa, com a CA em `SUPABASE_CA_CERT`, e o codigo remove qualquer `sslmode` da URL
+para que uma configuracao antiga nao derrube a verificacao em silencio.
 
 **Plano do Supabase e backup.** O que existe em Database → Backups depende do plano.
 Enquanto não houver backup diário garantido, o `pg_dump` semanal do INSTALL.md não é
@@ -350,7 +352,7 @@ computador, o registro precisa virar tabela.
 ## Antes de virar produção
 
 1. Formato confirmado no sistema do SEOM, com teste de digitação presencial
-2. Deploy na Vercel com as 4 variáveis, e `npm run rls:conferir` limpo
+2. Deploy na Vercel com as 3 variáveis, e `npm run rls:conferir` limpo
 3. Restauração de backup testada por outra pessoa
 4. Piloto com uma escola, ponta a ponta, até os números entrarem no sistema do SEOM
 5. README revisado por quem não conhece o sistema

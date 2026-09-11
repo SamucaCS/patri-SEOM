@@ -17,7 +17,7 @@ import { opcoesSslPg } from "../src/lib/prisma";
  * As tabelas estão com `FORCE ROW LEVEL SECURITY` e **zero políticas**, o que nega tudo
  * para todo mundo, inclusive o dono. Sem `BYPASSRLS` a aplicação não leria as próprias
  * tabelas. O RLS aqui existe para fechar a API REST do Supabase, não para limitar o
- * app — a barreira do app é a sessão em cada rota.
+ * app. E nao ha login: pela tela nao ha barreira nenhuma, por decisao do cliente.
  *
  * COMO USAR
  *
