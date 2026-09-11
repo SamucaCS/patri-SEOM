@@ -35,10 +35,20 @@ strings e não é recuperável depois, só redefinível.
 **Project Settings → Database → Connection string.** Você precisa de **duas**, e elas
 são diferentes de propósito:
 
-| Variável | Porta | Para quê |
-|----------|-------|----------|
-| `DATABASE_URL` | **6543** | runtime da aplicação. É o *pooler*. Serverless abre muita conexão, e o pooler absorve isso. Precisa terminar com `?pgbouncer=true` |
-| `DIRECT_URL` | **5432** | migrations, seed, scripts, **e a transação de emissão** |
+| Variável | Porta | Modo | Para quê |
+|----------|-------|------|----------|
+| `DATABASE_URL` | **6543** | transaction | runtime da aplicação. Serverless abre muita conexão, e o pooler absorve isso. Precisa terminar com `?pgbouncer=true` |
+| `DIRECT_URL` | **5432** | session | migrations, seed, scripts, **e a transação de emissão** |
+
+**As duas saem do mesmo host do pooler** (`aws-0-<região>.pooler.supabase.com`), mudando
+só a porta. Não use o host `db.<ref>.supabase.co`: em projeto novo ele é **IPv6 apenas**,
+e máquina sem rota IPv6 recebe `ENETUNREACH`. IPv4 direto é add-on pago. O session
+pooler na 5432 sustenta transação interativa e advisory lock igual à conexão direta —
+foi verificado, não presumido.
+
+**Acrescente `sslmode=no-verify` nas duas.** Sem isso o Node recusa o certificado do
+pooler com `SELF_SIGNED_CERT_IN_CHAIN`. Isso mantém a conexão criptografada, mas **não
+verifica a identidade do servidor** — ver "Dívida conhecida" no fim deste arquivo.
 
 **Não troque as duas de lugar.** A transação de emissão pega um advisory lock para
 serializar o contador; pelo pooler em *transaction mode*, os statements da mesma
@@ -278,3 +288,36 @@ Dois avisos que valem mais desde a migração:
   existir aqui.
 - **Não** crie tabela nova sem RLS. Tabela nova nasce **descoberta**, e a API REST do
   Supabase a publica. Rode `npm run rls:conferir` depois de qualquer migration.
+
+---
+
+## Dívida conhecida: `sslmode=no-verify`
+
+As connection strings usam `sslmode=no-verify`. Vale saber exatamente o que isso
+significa, porque a diferença é real:
+
+- **A conexão é criptografada.** Senha e dados não trafegam em claro, e escuta passiva
+  na rede não lê nada.
+- **A identidade do servidor não é verificada.** Um atacante capaz de se pôr no meio do
+  caminho — DNS envenenado, rota sequestrada — poderia apresentar qualquer certificado e
+  a conexão seria aceita.
+
+Por que está assim: `sslmode=require` falha com `SELF_SIGNED_CERT_IN_CHAIN`, porque o
+certificado do pooler do Supabase não é assinado por uma CA que o Node confia por padrão.
+
+**Como fechar isso**, quando valer a pena:
+
+1. Painel do Supabase → Settings → Database → **SSL Configuration** → baixe o
+   certificado da CA (`prod-ca-2021.crt`).
+2. Guarde no repositório (o certificado é público, não é segredo).
+3. Troque nas duas strings:
+
+   ```
+   ?sslmode=verify-full&sslrootcert=./certs/prod-ca-2021.crt
+   ```
+
+4. Na Vercel, o arquivo precisa entrar no bundle — confirme que ele é lido em runtime
+   antes de considerar resolvido.
+
+Quem opera na rede do SEOM, contra um banco na internet pública, está no cenário em que
+isso importa mais. Não é urgente, mas é dívida — não "escolha de configuração".

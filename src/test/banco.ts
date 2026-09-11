@@ -61,7 +61,7 @@ function urlDeTeste(): string {
  * nao e furo de cobertura: RLS protege a API REST do Supabase, que nao existe no schema
  * de teste, e nao restringe o Prisma (dono da tabela bypassa RLS).
  */
-const MIGRATIONS_FORA_DO_TESTE = [/_rls$/];
+const MIGRATIONS_FORA_DO_TESTE = [/_rls$/, /_rls_prisma_migrations$/];
 
 function sqlDasMigrations(): string {
   const todas = readdirSync(MIGRATIONS_DIR).filter((nome) =>

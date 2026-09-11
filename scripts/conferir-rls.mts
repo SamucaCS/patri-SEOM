@@ -14,7 +14,16 @@ import pg from "pg";
  *   - forced       : vale também para o dono da tabela?
  *   - políticas    : quantas políticas de acesso existem (esperado: 0 = nega tudo)
  *   - anon/auth    : os papéis da API pública têm algum privilégio sobrando?
+ *
+ * Este banco Supabase é COMPARTILHADO com outro sistema (há uma `portal_docs` em
+ * `public` que não é deste projeto). Por isso o script separa as nossas quatro tabelas
+ * das alheias: só as nossas contam para o código de saída. Tabela de outro sistema é
+ * listada como informação — fechá-la não é decisão nossa, e mexer nela quebraria algo
+ * que não conhecemos.
  */
+
+/** As tabelas deste projeto. Só estas determinam sucesso ou falha. */
+const NOSSAS = ["Escola", "Classe", "Lote", "Codigo", "_prisma_migrations"];
 
 const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
 if (!url) {
@@ -58,36 +67,66 @@ if (rows.length === 0) {
   process.exit(1);
 }
 
-const largura = Math.max(6, ...rows.map((r) => r.tabela.length));
-const cab = `${"tabela".padEnd(largura)}  RLS      FORCE    políticas  privilégio anon/authenticated`;
+const largura = Math.max(8, ...rows.map((r) => r.tabela.length));
+const cab =
+  `${"tabela".padEnd(largura)}  dono        RLS      FORCE    políticas  ` +
+  "privilégio anon/authenticated";
 console.log(cab);
 console.log("-".repeat(cab.length));
 
 let descobertas = 0;
+let alheias = 0;
 
 for (const r of rows) {
+  const nossa = NOSSAS.includes(r.tabela);
   const rls = r.rls ? "ativo" : "AUSENTE";
   const forcado = r.forcado ? "sim" : "NAO";
   const vazado = r.privilegios_publicos !== "-";
+  const problema = !r.rls || !r.forcado || vazado;
 
-  if (!r.rls || !r.forcado || vazado) descobertas++;
+  if (nossa && problema) descobertas++;
+  if (!nossa) alheias++;
 
   console.log(
-    `${r.tabela.padEnd(largura)}  ${rls.padEnd(7)}  ${forcado.padEnd(7)}  ` +
-      `${r.politicas.padStart(9)}  ${vazado ? r.privilegios_publicos : "nenhum"}`,
+    `${r.tabela.padEnd(largura)}  ${(nossa ? "emissor" : "OUTRO").padEnd(10)}  ` +
+      `${rls.padEnd(7)}  ${forcado.padEnd(7)}  ${r.politicas.padStart(9)}  ` +
+      `${vazado ? r.privilegios_publicos : "nenhum"}`,
   );
 }
 
+const faltando = NOSSAS.filter((t) => !rows.some((r) => r.tabela === t));
+for (const t of faltando) {
+  console.log(`${t.padEnd(largura)}  ${"emissor".padEnd(10)}  NAO EXISTE`);
+}
+
 console.log("");
-console.log(`${rows.length} tabela(s) em public.`);
+console.log(
+  `${rows.length} tabela(s) em public: ${rows.length - alheias} do emissor, ` +
+    `${alheias} de outro sistema.`,
+);
+
+if (faltando.length > 0) {
+  console.error(
+    `\nFaltam tabelas do emissor: ${faltando.join(", ")}. Rode: npm run db:deploy`,
+  );
+  process.exit(1);
+}
 
 if (descobertas > 0) {
   console.error(
-    `\n${descobertas} tabela(s) com problema. RLS precisa estar ATIVO e FORÇADO, e os ` +
-      "papéis anon/authenticated não devem ter privilégio nenhum.\n" +
+    `\n${descobertas} tabela(s) DO EMISSOR com problema. RLS precisa estar ATIVO e ` +
+      "FORÇADO, e os papéis anon/authenticated não devem ter privilégio nenhum.\n" +
       "Corrija aplicando a migration de RLS: npm run db:deploy",
   );
   process.exit(1);
+}
+
+if (alheias > 0) {
+  console.warn(
+    `\nAviso: ${alheias} tabela(s) em public não são deste projeto. O estado de RLS ` +
+      "delas é responsabilidade de quem as criou - este script não as avalia e a\n" +
+      "migration de RLS deste projeto não as toca.",
+  );
 }
 
 console.log(

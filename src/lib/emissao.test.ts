@@ -230,26 +230,29 @@ describe("3. codigo nunca e reaproveitado", () => {
 });
 
 describe("4. concorrencia (Postgres real, sem mock)", () => {
-  it("duas emissoes simultaneas no mesmo trio geram sequenciais contiguos e sem sobreposicao", async () => {
+  it("emissoes simultaneas no mesmo trio geram sequenciais contiguos e sem sobreposicao", async () => {
+    // LOTES era 2, e 2 nao basta: medido, a disputa quase nunca cai na janela certa e
+    // o teste passava ATE COM O ADVISORY LOCK REMOVIDO. Com 8 ele quebra de forma
+    // confiavel sem o lock. A garantia deterministica esta no teste
+    // "a emissao ESPERA pelo advisory lock do trio".
+    const LOTES = 8;
     const QUANTIDADE = 25;
 
-    const [a, b] = await Promise.all([
-      emitirLote(entrada({ quantidade: QUANTIDADE, descricao: "Lote A" }), {
-        client: prisma,
-        ano: ANO,
-      }),
-      emitirLote(entrada({ quantidade: QUANTIDADE, descricao: "Lote B" }), {
-        client: prisma,
-        ano: ANO,
-      }),
-    ]);
+    const resultados = await Promise.all(
+      Array.from({ length: LOTES }, (_, i) =>
+        emitirLote(entrada({ quantidade: QUANTIDADE, descricao: `Lote ${i}` }), {
+          client: prisma,
+          ano: ANO,
+        }),
+      ),
+    );
 
-    const todos = [...a.codigos, ...b.codigos];
+    const todos = resultados.flatMap((r) => r.codigos);
 
     // Sem sobreposicao.
-    expect(new Set(todos).size).toBe(QUANTIDADE * 2);
+    expect(new Set(todos).size).toBe(QUANTIDADE * LOTES);
 
-    // Contiguos: exatamente 1..50, sem buraco.
+    // Contiguos: exatamente 1..200, sem buraco.
     const sequenciais = (
       await prisma.codigo.findMany({
         where: { escolaId, classeId: classeTecId, ano: ANO },
@@ -259,38 +262,41 @@ describe("4. concorrencia (Postgres real, sem mock)", () => {
     ).map((c) => c.sequencial);
 
     expect(sequenciais).toEqual(
-      Array.from({ length: QUANTIDADE * 2 }, (_, i) => i + 1),
+      Array.from({ length: QUANTIDADE * LOTES }, (_, i) => i + 1),
     );
 
     // Cada lote recebeu um bloco contiguo proprio.
-    for (const resultado of [a, b]) {
+    for (const resultado of resultados) {
       const seqs = resultado.codigos.map(sequencialDe).sort((x, y) => x - y);
       expect(seqs[seqs.length - 1] - seqs[0]).toBe(QUANTIDADE - 1);
     }
   });
 
   it("emissoes simultaneas em conexoes distintas tambem nao se sobrepoem", async () => {
-    const conexaoB = banco.novaConexao();
+    // Eram 2 conexoes; viraram 6 pelo mesmo motivo do teste acima. Conexoes distintas
+    // importam porque num unico PrismaClient as transacoes podem acabar serializadas
+    // pelo pool - o que esconde a corrida em vez de resolve-la.
+    const CONEXOES = 6;
     const QUANTIDADE = 20;
 
-    const [a, b] = await Promise.all([
-      emitirLote(entrada({ quantidade: QUANTIDADE, descricao: "Conexao A" }), {
-        client: prisma,
-        ano: ANO,
-      }),
-      emitirLote(entrada({ quantidade: QUANTIDADE, descricao: "Conexao B" }), {
-        client: conexaoB,
-        ano: ANO,
-      }),
-    ]);
+    const clientes = [prisma, ...Array.from({ length: CONEXOES - 1 }, () => banco.novaConexao())];
 
-    const todos = [...a.codigos, ...b.codigos];
-    expect(new Set(todos).size).toBe(QUANTIDADE * 2);
+    const resultados = await Promise.all(
+      clientes.map((client, i) =>
+        emitirLote(entrada({ quantidade: QUANTIDADE, descricao: `Conexao ${i}` }), {
+          client,
+          ano: ANO,
+        }),
+      ),
+    );
+
+    const todos = resultados.flatMap((r) => r.codigos);
+    expect(new Set(todos).size).toBe(QUANTIDADE * CONEXOES);
 
     const gravados = await prisma.codigo.count({
       where: { escolaId, classeId: classeTecId, ano: ANO },
     });
-    expect(gravados).toBe(QUANTIDADE * 2);
+    expect(gravados).toBe(QUANTIDADE * CONEXOES);
   });
 
   it("varias emissoes simultaneas nao deixam buraco nem duplicata", async () => {
@@ -482,52 +488,72 @@ describe("unicidade nunca vira retry, e o lock e que serializa", () => {
     expect(ehViolacaoDeUnicidade(expirada)).toBe(false);
   });
 
-  it("o advisory lock e realmente tomado pela transacao de emissao", async () => {
-    // Prova direta, contra o Postgres real: enquanto uma emissao esta em curso, a
-    // chave do trio aparece em pg_locks como advisory. Se este teste falhar, o lock
-    // nao esta sendo pego - e o teste de concorrencia perde o sentido.
+  it("a emissao ESPERA pelo advisory lock do trio", async () => {
+    // Este e o teste que detecta, de forma DETERMINISTICA, se a emissao parou de tomar
+    // o advisory lock. Os testes de concorrencia acima nao servem para isso: eles
+    // dependem de a disputa acontecer na janela certa, e com poucos lotes simultaneos
+    // ela frequentemente nao acontece - passam mesmo com o lock removido.
+    //
+    // Aqui a disputa e forcada: uma conexao "guarda" pega o lock do trio e o segura.
+    // Se a emissao tomar o lock, ela FICA BLOQUEADA e nao termina enquanto a guarda
+    // nao soltar. Se a emissao NAO tomar o lock, ela passa reto e termina - e a
+    // asserção `concluiu === false` quebra.
     const chave = `${escolaId}:${classeTecId}:${ANO}`;
 
-    const [{ hash }] = await prisma.$queryRaw<Array<{ hash: number }>>`
+    const [{ hash }] = await prisma.$queryRaw<Array<{ hash: bigint }>>`
       SELECT hashtext(${chave})::bigint AS hash
     `;
 
-    let travadosDurante = 0;
-    let liberar!: () => void;
-    const porta = new Promise<void>((r) => (liberar = r));
-
-    const conexaoB = banco.novaConexao();
-
-    // Segura uma transacao que pegou o MESMO lock, e olha pg_locks de fora.
-    const emCurso = conexaoB.$transaction(
-      async (tx) => {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${chave})::bigint)`;
-        await porta;
-      },
-      { maxWait: 10_000, timeout: 30_000 },
-    );
-
-    // Espera o lock aparecer, sem depender de tempo fixo.
-    for (let i = 0; i < 50 && travadosDurante === 0; i++) {
+    const contarLocks = async () => {
       const r = await prisma.$queryRaw<Array<{ n: bigint }>>`
         SELECT count(*) AS n FROM pg_locks
         WHERE locktype = 'advisory' AND ((classid::bigint << 32) | objid::bigint) = ${hash}
       `;
-      travadosDurante = Number(r[0]?.n ?? 0);
-      if (travadosDurante === 0) await new Promise((r2) => setTimeout(r2, 20));
+      return Number(r[0]?.n ?? 0);
+    };
+
+    let liberar!: () => void;
+    const porta = new Promise<void>((r) => (liberar = r));
+
+    const guarda = banco.novaConexao();
+    const segurando = guarda.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${chave})::bigint)`;
+        await porta;
+      },
+      { maxWait: 20_000, timeout: 90_000 },
+    );
+
+    // Espera o lock da guarda aparecer, sem depender de tempo fixo.
+    for (let i = 0; i < 100 && (await contarLocks()) === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
     }
+    expect(await contarLocks()).toBeGreaterThan(0);
+
+    // Agora a emissao, numa conexao propria para nao disputar pool com a guarda.
+    let concluiu = false;
+    const emissao = emitirLote(
+      entrada({ quantidade: 1, descricao: "espera pelo lock" }),
+      { client: banco.novaConexao(), ano: ANO },
+    ).then((r) => {
+      concluiu = true;
+      return r;
+    });
+
+    // Folga generosa: o banco e remoto (~200ms por ida e volta). Se em 5s a emissao
+    // terminou, ela nao esperou por lock nenhum.
+    await new Promise((r) => setTimeout(r, 5_000));
+    expect(concluiu).toBe(false);
 
     liberar();
-    await emCurso;
+    await segurando;
 
-    expect(travadosDurante).toBeGreaterThan(0);
+    const resultado = await emissao;
+    expect(concluiu).toBe(true);
+    expect(resultado.codigos).toEqual(["SUZ-BR20260001-TEC"]);
 
-    // E depois do commit, o lock some sozinho: e `_xact_`, nao precisa de unlock.
-    const depois = await prisma.$queryRaw<Array<{ n: bigint }>>`
-      SELECT count(*) AS n FROM pg_locks
-      WHERE locktype = 'advisory' AND ((classid::bigint << 32) | objid::bigint) = ${hash}
-    `;
-    expect(Number(depois[0]?.n ?? 0)).toBe(0);
+    // `_xact_`: o lock morre no commit, sem unlock explicito.
+    expect(await contarLocks()).toBe(0);
   });
 
   it("o indice unico recusa sequencial repetido dentro do mesmo ano", async () => {

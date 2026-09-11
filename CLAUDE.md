@@ -140,6 +140,16 @@ rota. Quem ler a migration de RLS esperando limite para o app vai se enganar.
 `exigirOperador()`. A segunda é a que vale — Server Action e Route Handler são
 endpoints HTTP e podem ser chamados direto.
 
+**`pg_advisory_xact_lock` vai por `$executeRaw`, não `$queryRaw`.** A função devolve
+`void`, e o Prisma não consegue desserializar coluna desse tipo — falha com
+"Failed to deserialize column of type 'void'". Não é preferência de estilo: com
+`$queryRaw` a emissão **não funciona**. Foi o primeiro erro que os testes contra o
+Postgres real pegaram, e não apareceria em teste com mock.
+
+(Detalhe que atrasou o diagnóstico: `boot.ts` usa `pg_try_advisory_xact_lock`, que
+devolve `boolean` e desserializa bem — então a checagem de integridade passava
+enquanto a emissão quebrava.)
+
 **Sem Zod.** Estava na especificação original, foi instalado e nunca usado. As
 validações à mão funcionam e estão sob teste. A linha da especificação estava errada,
 não o código.
@@ -244,12 +254,44 @@ identificador do bem. Decidir uma vez e encerrar.
 esquerda. O campo é texto de propósito — dois CIEs terminam em letra (`007171A`,
 `921518A`) e tratá-los como número truncaria.
 
+**Teste de corrida é probabilístico, e isso foi medido.** Removendo o advisory lock e
+rodando a suíte, **3 dos 4 testes de concorrência passaram**. Dois usavam só 2 lotes
+simultâneos — disputa insuficiente para cair na janela; o terceiro (anos diferentes)
+passa corretamente, porque trios distintos não disputam. Os dois fracos subiram para 8 e
+6 lotes em conexões distintas, e a garantia determinística passou a ser o teste
+`"a emissao ESPERA pelo advisory lock do trio"`: uma conexão segura o lock e a emissão
+tem que bloquear.
+
+Lição para quem mexer nisso: **nunca confie num teste de concorrência sem antes quebrar
+de propósito o mecanismo que ele deveria testar.** Aqui isso revelou também que o teste
+original de `pg_locks` pegava o lock ele mesmo, em vez de observar a emissão — passava
+com o lock removido, e o nome dele mentia.
+
 **Colisão de `hashtext` no advisory lock.** A chave `(escola, classe, ano)` passa por
 `hashtext`, que devolve `int4`. Duas chaves diferentes podem colidir nesse espaço — o
 efeito é apenas dois trios distintos se serializando entre si, seguro e no máximo um
 pouco mais lento. O contrário, dois trios **iguais** pegando locks diferentes, é
 impossível: mesma string, mesmo hash. Se a contenção incomodar no futuro, a saída é uma
 tabela de locks com `SELECT FOR UPDATE`, não um hash maior.
+
+**O banco Supabase e COMPARTILHADO com outro sistema.** Ha uma tabela `portal_docs`
+em `public` que nao e deste projeto. Consequencias que ficaram no codigo:
+
+- a migration de RLS revoga privilegio **tabela por tabela**, nao com
+  `REVOKE ALL ON ALL TABLES IN SCHEMA public`. A primeira versao usava a forma ampla e
+  teria tirado o acesso da `portal_docs` tambem, quebrando outro sistema;
+- por isso saiu tambem o `ALTER DEFAULT PRIVILEGES`, que afetaria toda tabela criada
+  depois por qualquer sistema. **O preco: tabela nova deste projeto nao nasce mais
+  fechada automaticamente** - `npm run rls:conferir` tem que rodar depois de cada
+  migration;
+- `npm run rls:conferir` separa "nossas" de "de outro sistema" e so falha pelas nossas.
+
+Se o patrimonio ganhar projeto Supabase proprio, os tres pontos acima podem voltar ao
+formato amplo, que e mais seguro.
+
+**`sslmode=no-verify` nas connection strings.** Criptografa, mas nao verifica a
+identidade do servidor. `sslmode=require` falha porque o certificado do pooler nao e
+assinado por CA que o Node confie. Como fechar esta em INSTALL.md, em "Divida conhecida".
 
 **Plano do Supabase e backup.** O que existe em Database → Backups depende do plano.
 Enquanto não houver backup diário garantido, o `pg_dump` semanal do INSTALL.md não é

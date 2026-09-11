@@ -129,8 +129,12 @@ Supabase Auth · SheetJS · Vitest. Hospedado na **Vercel**.
 
 | Variável | Porta | Usada por |
 | --- | --- | --- |
-| `DATABASE_URL` | 6543 (pooler) | uso geral em runtime |
-| `DIRECT_URL` | 5432 (direta) | migrations, seed, scripts e **a transação de emissão** |
+| `DATABASE_URL` | 6543 (pooler, transaction mode) | uso geral em runtime |
+| `DIRECT_URL` | 5432 (pooler, session mode) | migrations, seed, scripts e **a transação de emissão** |
+
+As duas saem do mesmo host do pooler, mudando só a porta. O host `db.<ref>.supabase.co`
+não serve: em projeto novo é IPv6 apenas. Detalhes e a dívida do `sslmode` em
+[INSTALL.md](INSTALL.md).
 
 Era SQLite até a migração para a Vercel. Não é detalhe de infraestrutura: o SQLite
 serializava escrita por natureza, e era isso que impedia duas emissões simultâneas de
@@ -278,9 +282,24 @@ transação e o teste de concorrência passaria sem exercitar nada.
 
 Cobrem, entre outros: formato do código, isolamento por classe, reinício anual, não
 reaproveitamento após cancelamento, concorrência, teto por ano, imutabilidade da sigla
-e ordem das colunas da exportação. E dois específicos desta arquitetura: que o advisory
-lock **aparece de fato em `pg_locks`** durante a emissão, e que ele **desaparece** no
-commit sem unlock explícito.
+e ordem das colunas da exportação.
+
+### O teste que prova que o lock serve para algo
+
+`"a emissao ESPERA pelo advisory lock do trio"` é o único **determinístico**: uma
+conexão pega o lock do trio e o segura; a emissão então tem que ficar bloqueada. Se ela
+terminar, não pegou o lock, e o teste quebra.
+
+Isso existe porque a verificação foi feita de verdade — removendo o advisory lock e
+rodando a suíte. O resultado foi desconfortável: **3 dos 4 testes de concorrência
+passaram sem o lock.** Dois deram só 2 lotes simultâneos, e com tão pouca disputa a
+corrida quase nunca cai na janela certa; o terceiro (anos diferentes) passa
+corretamente, porque anos distintos são trios distintos e não disputam nada.
+
+Os dois fracos subiram para 8 e 6 lotes, em conexões distintas — conexões importam,
+porque num único `PrismaClient` o pool pode serializar as transações e **esconder** a
+corrida em vez de resolvê-la. Mas teste de corrida é probabilístico por natureza; o que
+garante a regressão é o teste de espera.
 
 ## Onde as regras moram
 

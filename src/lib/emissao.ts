@@ -157,7 +157,10 @@ async function emitirLoteUmaVez(
       //    lento. O contrario, dois trios IGUAIS pegando locks diferentes, e
       //    impossivel: mesma string, mesmo hash. E e so isso que a corretude exige.
       const chaveDoLock = `${input.escolaId}:${input.classeId}:${ano}`;
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${chaveDoLock})::bigint)`;
+      //    `$executeRaw`, e nao `$queryRaw`: a funcao devolve `void`, e o Prisma nao
+      //    consegue desserializar coluna desse tipo - falha com "Failed to deserialize
+      //    column of type 'void'". Aqui nao se quer valor nenhum, so o efeito.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${chaveDoLock})::bigint)`;
 
       const escola = await tx.escola.findUnique({ where: { id: input.escolaId } });
       if (!escola) {
